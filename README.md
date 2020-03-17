@@ -1,4 +1,4 @@
-# ROCclr
+# ROCclr - Radeon Open Compute Common Language Runtime 
 ROCclr is a virtual device interface that compute runtimes interact with to different backends such as ROCr or PAL
 This abstraction allows runtimes to work on Windows as well as on Linux without much effort.
 
