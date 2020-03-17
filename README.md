@@ -4,6 +4,13 @@ This abstraction allows runtimes to work on Windows as well as on Linux without 
 
 To build:
 
+ Prerequisites
+
+  Install mesa-common-dev
+ 
+  Either build or install comgr & clang
+ 
+ 
  git clone https://github.com/ROCm-Developer-Tools/ROCclr.git
  
  export VDI_DIR="$(readlink -f ROCclr)
