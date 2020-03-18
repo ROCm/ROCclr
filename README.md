@@ -13,13 +13,15 @@ To build:
  
  git clone https://github.com/ROCm-Developer-Tools/ROCclr.git
  
- export VDI_DIR="$(readlink -f ROCclr)
+ export VDI_DIR="$(readlink -f ROCclr)"
  
  git clone https://github.com/RadeonOpenCompute/ROCm-OpenCL-Runtime.git
  
+ cd ROCm-OpenCL-Runtime/api
+ 
  export OPENCL_DIR="$(readlink -f opencl)"
  
- cd ROCclr
+ cd ../../ROCclr
  
  mkdir -p build; cd build
  
