@@ -15,13 +15,13 @@ To build:
  
  export VDI_DIR="$(readlink -f ROCclr)"
  
- git clone https://github.com/RadeonOpenCompute/ROCm-OpenCL-Runtime.git
+ git clone -b master-next https://github.com/RadeonOpenCompute/ROCm-OpenCL-Runtime.git
  
- cd ROCm-OpenCL-Runtime/api
+ cd ROCm-OpenCL-Runtime
  
  export OPENCL_DIR="$(readlink -f opencl)"
  
- cd ../../ROCclr
+ cd ../ROCclr
  
  mkdir -p build; cd build
  
