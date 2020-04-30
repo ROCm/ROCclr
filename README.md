@@ -17,9 +17,7 @@ To build:
  
  git clone -b master-next https://github.com/RadeonOpenCompute/ROCm-OpenCL-Runtime.git
  
- cd ROCm-OpenCL-Runtime
- 
- export OPENCL_DIR="$(readlink -f opencl)"
+ export OPENCL_DIR="$(readlink -f ROCm-OpenCL-Runtime)"
  
  cd ../ROCclr
  
