@@ -133,8 +133,8 @@ bool Settings::create(bool fullProfile, int gfxipVersion, bool coop_groups) {
     // enable subnormals for gfx900 and later
     if (gfxipVersion >= 900) {
       singleFpDenorm_ = true;
-      enableCoopGroups_ = coop_groups;
-      enableCoopMultiDeviceGroups_ = coop_groups;
+      enableCoopGroups_ &= coop_groups;
+      enableCoopMultiDeviceGroups_ &= coop_groups;
     }
   } else {
     // Also enable AMD double precision extension?
