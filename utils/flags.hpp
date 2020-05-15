@@ -233,9 +233,7 @@ release(uint, AMD_OPT_FLUSH, 1,                                               \
         "0x1 = Use device-scope fence operations when possible.")             \
 release(uint, HIP_HIDDEN_FREE_MEM, 0,                                         \
         "Reserve free mem reporting in Mb"                                    \
-        "0 = Disable")                                                        \
-release(bool, HIP_ENABLE_LAZY_KERNEL_LOADING, true,                           \
-        "Enable LAZY Kernel Loading")
+        "0 = Disable")
 
 namespace amd {
 
