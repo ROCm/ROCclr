@@ -1871,6 +1871,9 @@ bool KernelBlitManager::writeBufferRect(const void* srcHost, device::Memory& dst
 bool KernelBlitManager::fillBuffer(device::Memory& memory, const void* pattern, size_t patternSize,
                                    const amd::Coord3D& origin, const amd::Coord3D& size,
                                    bool entire) const {
+  // HSA copy functionality with a possible async operaiton, hence make sure GPU is done
+  gpu().releaseGpuMemoryFence();
+
   amd::ScopedLock k(lockXferOps_);
   bool result = false;
 
