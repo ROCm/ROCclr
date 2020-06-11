@@ -202,7 +202,8 @@ if(NOT CMAKE_INSTALL_PREFIX)
 #endif()
 endif()
 
-install( TARGETS amdrocclr_static ARCHIVE DESTINATION lib LIBRARY DESTINATION lib COMPONENT applications)
+install( TARGETS amdrocclr_static EXPORT amdrocclr_staticTargets ARCHIVE DESTINATION lib LIBRARY DESTINATION lib COMPONENT applications)
+install(EXPORT amdrocclr_staticTargets DESTINATION lib)
 file(GLOB headerfiles "${CMAKE_CURRENT_SOURCE_DIR}/*.h*")
 install (
     FILES ${headerfiles}
