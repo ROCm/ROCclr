@@ -455,21 +455,8 @@ bool VirtualGPU::dispatchGenericAqlPacket(
 
   // TODO: placeholder to setup the kernel to populate start and end timestamp.
   if (timestamp_ != nullptr) {
-    // Pool size must grow to the size of pending AQL packets
-    const uint32_t pool_size = index - read;
-    if (pool_size >= signal_pool_.size()) {
-      ProfilingSignal profiling_signal = {};
-      if (HSA_STATUS_SUCCESS != hsa_signal_create(0, 0, nullptr, &profiling_signal.signal_)) {
-        LogPrintfError("Failed signal allocation id = %d", pool_size);
-        return false;
-      }
-      signal_pool_.push_back(profiling_signal);
-      assert(queueSize >= signal_pool_.size() && "Pool will be reallocated!");
-    }
-    // Move index inside the valid pool
-    ++current_signal_ %= signal_pool_.size();
     // Find signal slot
-    ProfilingSignal* profilingSignal = &signal_pool_[current_signal_];
+    ProfilingSignal* profilingSignal = &signal_pool_[index & queueMask];
     // Make sure we save the old results in the TS structure
     if (profilingSignal->ts_ != nullptr) {
       profilingSignal->ts_->checkGpuTime();
@@ -549,8 +536,6 @@ bool VirtualGPU::dispatchGenericAqlPacket(
       LogPrintfError("Failed signal [0x%lx] wait", signal.handle);
       return false;
     }
-    // Reset the pool of signals
-    current_signal_ = 0;
   }
 
   return true;
@@ -635,14 +620,8 @@ void VirtualGPU::ResetQueueStates() {
   // Release all memory dependencies
   memoryDependency().clear();
 
-  if (dev().settings().barrier_sync_) {
-    // Release the pool, since runtime just completed a barrier
-    // @note: Runtime can reset kernel arg pool only if the barrier with L2 invalidation was issued
-    resetKernArgPool();
-  } else {
-    // Reset the pool of signals
-    current_signal_ = 0;
-  }
+  // Release the pool, since runtime just completed a barrier
+  resetKernArgPool();
 }
 
 // ================================================================================================
@@ -854,17 +833,8 @@ bool VirtualGPU::initPool(size_t kernarg_pool_size, uint signal_pool_count) {
   }
 
   if (signal_pool_count != 0) {
-    // Reserve signal pool for all entries in the queue, since profiling logic will save the
-    // pointer in timestamp info for the future references
-    signal_pool_.reserve(signal_pool_count);
-    // If barrier is disable, then allocate a small portion of all signals and grow the array later.
-    // @note: the optimization requires a wait for signal on reuse, which is only available when
-    // the barrier is disabled
-    constexpr uint32_t kDefaultSignalPoolSize = 32;
-    const uint32_t default_signal_pool_size = (dev().settings().barrier_sync_) ?
-        signal_pool_count : kDefaultSignalPoolSize;
-    signal_pool_.resize(default_signal_pool_size);
-    for (uint i = 0; i < default_signal_pool_size; ++i) {
+    signal_pool_.resize(signal_pool_count);
+    for (uint i = 0; i < signal_pool_count; ++i) {
       ProfilingSignal profilingSignal;
       if (HSA_STATUS_SUCCESS != hsa_signal_create(0, 0, nullptr, &profilingSignal.signal_)) {
         return false;
@@ -911,9 +881,6 @@ void* VirtualGPU::allocKernArg(size_t size, size_t alignment) {
       }
 
       resetKernArgPool();
-
-      // Reset the pool of signals
-      current_signal_ = 0;
     }
   } while (true);
 
