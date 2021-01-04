@@ -374,15 +374,22 @@ const void* Os::createOsThread(amd::Thread* thread) {
     for (int i = 0; i < processorCount_; i++) {
       CPU_SET(i, &cpuset);
     }
+#ifdef pthread_attr_setaffinity_np
     if (0 != pthread_attr_setaffinity_np(&threadAttr, sizeof(cpu_set_t), &cpuset)) {
       fatal("pthread_attr_setaffinity_np failed to set affinity");
     }
+#endif
   }
 
   pthread_t handle = 0;
   if (0 != ::pthread_create(&handle, &threadAttr, (void* (*)(void*)) & Thread::entry, thread)) {
     thread->setState(Thread::FAILED);
   }
+#ifndef pthread_attr_setaffinity_np
+  if (0 != pthread_setaffinity_np(handle, sizeof(cpu_set_t), &cpuset)) {
+    fatal("pthread_attr_setaffinity_np failed to set affinity");
+  }
+#endif
 
   ::pthread_attr_destroy(&threadAttr);
   return reinterpret_cast<const void*>(handle);

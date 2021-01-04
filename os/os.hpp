@@ -29,11 +29,16 @@
 
 #if defined(__linux__)
 #include <sched.h>
+#include <libgen.h>
 #endif
 
 #ifdef _WIN32
 #include <Basetsd.h>  // For KAFFINITY
 #endif                // _WIN32
+
+#ifndef __cpu_mask
+typedef unsigned long __cpu_mask;
+#endif
 
 // Smallest supported VM page size.
 #define MIN_PAGE_SHIFT 12
