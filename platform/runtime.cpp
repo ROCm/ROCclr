@@ -43,6 +43,10 @@
 #include <cstdlib>
 #include <iostream>
 
+namespace hip {
+  extern void tearDown();
+}
+
 namespace amd {
 
 volatile bool Runtime::initialized_ = false;
@@ -89,6 +93,7 @@ void Runtime::tearDown() {
   }
   ClTrace(LOG_DEBUG, LOG_INIT);
 
+  hip::tearDown();
   Agent::tearDown();
   Device::tearDown();
   option::teardown();
@@ -99,7 +104,7 @@ void Runtime::tearDown() {
 class RuntimeTearDown : public amd::HeapObject {
 public:
   RuntimeTearDown() {}
-  ~RuntimeTearDown() { /*Runtime::tearDown();*/ }
+  ~RuntimeTearDown() { Runtime::tearDown(); }
 } runtime_tear_down;
 
 uint ReferenceCountedObject::retain() {
