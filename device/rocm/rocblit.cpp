@@ -466,6 +466,7 @@ bool DmaBlitManager::copyBufferRect(device::Memory& srcMemory, device::Memory& d
               hsa_amd_memory_async_copy((reinterpret_cast<address>(dst) + dstOffset), dstAgent,
                                         (reinterpret_cast<const_address>(src) + srcOffset), srcAgent,
                                         size[0], 0, nullptr, completion_signal_);
+          gpu().setLastCommandSDMA(true) ;
           if (status != HSA_STATUS_SUCCESS) {
             LogPrintfError("DMA buffer failed with code %d", status);
             return false;
@@ -489,7 +490,11 @@ bool DmaBlitManager::copyImageToBuffer(device::Memory& srcMemory, device::Memory
                                        const amd::Coord3D& size, bool entire, size_t rowPitch,
                                        size_t slicePitch) const {
   // HSA copy functionality with a possible async operaiton, hence make sure GPU is done
-  gpu().releaseGpuMemoryFence();
+  if (!dev().settings().barrier_sync_ && !gpu().isLastCommandSDMA()) {
+    gpu().releaseGpuMemoryFence(true);
+  } else {
+    gpu().releaseGpuMemoryFence();
+  }
 
   bool result = false;
 
@@ -536,7 +541,11 @@ bool DmaBlitManager::copyBufferToImage(device::Memory& srcMemory, device::Memory
                                        const amd::Coord3D& size, bool entire, size_t rowPitch,
                                        size_t slicePitch) const {
   // HSA copy functionality with a possible async operaiton, hence make sure GPU is done
-  gpu().releaseGpuMemoryFence();
+  if (!dev().settings().barrier_sync_ && !gpu().isLastCommandSDMA()) {
+    gpu().releaseGpuMemoryFence(true);
+  } else {
+    gpu().releaseGpuMemoryFence();
+  }
 
   bool result = false;
 
@@ -601,6 +610,10 @@ bool DmaBlitManager::hsaCopy(const Memory& srcMemory, const Memory& dstMemory,
   address src = reinterpret_cast<address>(srcMemory.getDeviceMemory());
   address dst = reinterpret_cast<address>(dstMemory.getDeviceMemory());
 
+  if (!dev().settings().barrier_sync_ && !gpu().isLastCommandSDMA()) {
+    gpu().releaseGpuMemoryFence(true);
+  }
+
   src += srcOrigin[0];
   dst += dstOrigin[0];
 
@@ -641,7 +654,7 @@ bool DmaBlitManager::hsaCopy(const Memory& srcMemory, const Memory& dstMemory,
   // Use SDMA to transfer the data
   status = hsa_amd_memory_async_copy(dst, dstAgent, src, srcAgent, size[0], 0, nullptr,
                                      completion_signal_);
-
+  gpu().setLastCommandSDMA(true);
   if (status == HSA_STATUS_SUCCESS) {
     hsa_signal_value_t val;
 
@@ -675,6 +688,9 @@ bool DmaBlitManager::hsaCopyStaged(const_address hostSrc, address hostDst, size_
   size_t offset = 0;
 
   address hsaBuffer = staging;
+  if (!dev().settings().barrier_sync_ && !gpu().isLastCommandSDMA()) {
+    gpu().releaseGpuMemoryFence(true);
+  }
 
   // Allocate requested size of memory
   while (totalSize > 0) {
@@ -692,6 +708,7 @@ bool DmaBlitManager::hsaCopyStaged(const_address hostSrc, address hostDst, size_
       memcpy(hsaBuffer, hostSrc + offset, size);
       status = hsa_amd_memory_async_copy(hostDst + offset, dev().getBackendDevice(), hsaBuffer,
                                          srcAgent, size, 0, nullptr, completion_signal_);
+      gpu().setLastCommandSDMA(true);
       if (status == HSA_STATUS_SUCCESS) {
         if (!WaitForSignal(completion_signal_)) {
           LogError("Async copy failed");
@@ -716,6 +733,7 @@ bool DmaBlitManager::hsaCopyStaged(const_address hostSrc, address hostDst, size_
     status =
         hsa_amd_memory_async_copy(hsaBuffer, dstAgent, hostSrc + offset,
                                   dev().getBackendDevice(), size, 0, nullptr, completion_signal_);
+    gpu().setLastCommandSDMA(true);
     if (status == HSA_STATUS_SUCCESS) {
       if (!WaitForSignal(completion_signal_)) {
         LogError("Async copy failed");
@@ -1065,7 +1083,11 @@ bool KernelBlitManager::copyBufferToImageKernel(device::Memory& srcMemory,
   releaseArguments(parameters);
   if (releaseView) {
     // todo SRD programming could be changed to avoid a stall
-    gpu().releaseGpuMemoryFence();
+    if(!dev().settings().barrier_sync_) {
+      gpu().releaseGpuMemoryFence(true);
+   } else {
+     gpu().releaseGpuMemoryFence();
+   }
     dstView->owner()->release();
   }
 
@@ -1263,7 +1285,11 @@ bool KernelBlitManager::copyImageToBufferKernel(device::Memory& srcMemory,
   releaseArguments(parameters);
   if (releaseView) {
     // todo SRD programming could be changed to avoid a stall
-    gpu().releaseGpuMemoryFence();
+    if(!dev().settings().barrier_sync_) {
+      gpu().releaseGpuMemoryFence(true);
+    } else {
+      gpu().releaseGpuMemoryFence();
+    }
     srcView->owner()->release();
   }
 
@@ -1654,14 +1680,24 @@ bool KernelBlitManager::readBuffer(device::Memory& srcMemory, void* dstHost,
   bool result = false;
 
   if (dev().info().largeBar_ && size[0] <= kMaxD2hMemcpySize) {
-    if ((srcMemory.owner()->getHostMem() == nullptr) && (srcMemory.owner()->getSvmPtr() != nullptr)) {
+    if ((srcMemory.owner()->getHostMem() == nullptr) &&
+        (srcMemory.owner()->getSvmPtr() != nullptr)) {
       // CPU read ahead, hence release GPU memory and force barrier to make sure L2 flush
       constexpr bool ForceBarrier = true;
       gpu().releaseGpuMemoryFence(ForceBarrier);
       char* src = reinterpret_cast<char*>(srcMemory.owner()->getSvmPtr());
       std::memcpy(dstHost, src + origin[0], size[0]);
-      // The first dispatch will invalidate L2
-      gpu().addSystemScope();
+      // Force HDP Read cache invalidation somewhere in the AQL barrier flags...
+      // @note: This is a workaround for an issue in ROCr/ucode, when the following SDMA transfer
+      //        won't invalidate HDP read and later CPU will receive the old values.
+      //        It's unclear if AQL has the same issue and runtime needs to track extra AQL flags
+      //        if this workaround will be removed in the future
+      // 1. H->D: SDMA
+      // 2. D->H: CPU Read  HDP read cache was updated
+      // 3. H->D: SDMA      Memory updated, ROCr/ucode doesn't invalidate HDP read cache after
+      //                    transfer
+      // 4. D->H: CPU Read  CPU receives the old values from HDP read cache
+      gpu().hasPendingDispatch();
       return true;
     }
   }
