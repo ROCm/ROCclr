@@ -47,6 +47,13 @@ struct AMDDeviceInfo {
   uint pciDeviceId_;           //!< PCIe device id
 };
 
+enum HwQueueEngine : uint32_t {
+  Compute   = 0,
+  SdmaRead  = 1,
+  SdmaWrite = 2,
+  Unknown   = 3
+};
+
 constexpr HsaDeviceId HSA_INVALID_DEVICE_ID = -1;
 
 static constexpr AMDDeviceInfo DeviceInfo[] = {
