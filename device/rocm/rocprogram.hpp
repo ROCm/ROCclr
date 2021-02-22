@@ -49,12 +49,18 @@ class Program : public device::Program {
   virtual bool initClBinary(char* binaryIn, size_t size);
 
   //! Return a typecasted GPU device
-  const NullDevice& dev() const { return static_cast<const NullDevice&>(device()); }
+  const NullDevice& rocNullDevice() const { return static_cast<const NullDevice&>(device()); }
 
-  //! Returns the hsaBinary associated with the program
-  hsa_agent_t hsaDevice() const { return dev().getBackendDevice(); }
+  //! Return a typecasted GPU device
+  const Device& rocDevice() const {
+    assert(!isNull());
+    return static_cast<const Device&>(device());
+  }
 
-  hsa_executable_t hsaExecutable() const { return hsaExecutable_; }
+  hsa_executable_t hsaExecutable() const {
+    assert(!isNull());
+    return hsaExecutable_;
+  }
 
   virtual bool createGlobalVarObj(amd::Memory** amd_mem_obj, void** dptr,
                                   size_t* bytes, const char* globalName) const;
@@ -68,7 +74,7 @@ class Program : public device::Program {
                            );
   virtual bool createBinary(amd::option::Options* options) = 0;
 
-  virtual const aclTargetInfo& info(const char* str = "") { return info_; }
+  virtual const aclTargetInfo& info() { return info_; }
 
  protected:
   //! Disable default copy constructor

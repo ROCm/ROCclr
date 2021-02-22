@@ -21,6 +21,7 @@
 #pragma once
 
 #include "platform/commandqueue.hpp"
+#include "rocdefs.hpp"
 #include "rocdevice.hpp"
 #include "utils/util.hpp"
 #include "hsa.h"
@@ -35,11 +36,17 @@ class Device;
 class Memory;
 class Timestamp;
 
-struct ProfilingSignal : public amd::HeapObject {
-  hsa_signal_t signal_;  //!< HSA signal to track profiling information
-  Timestamp* ts_;        //!< Timestamp object associated with the signal
 
-  ProfilingSignal() : ts_(nullptr) { signal_.handle = 0; }
+struct ProfilingSignal : public amd::HeapObject {
+  hsa_signal_t  signal_;  //!< HSA signal to track profiling information
+  Timestamp*    ts_;      //!< Timestamp object associated with the signal
+  HwQueueEngine engine_;  //!< Engine used with this signal
+  bool          done_;    //!< True if signal is done
+  ProfilingSignal()
+    : ts_(nullptr)
+    , engine_(HwQueueEngine::Compute)
+    , done_(true)
+    { signal_.handle = 0; }
 };
 
 // Initial HSA signal value
@@ -64,17 +71,25 @@ inline bool WaitForSignal(hsa_signal_t signal) {
 
 // Timestamp for keeping track of some profiling information for various commands
 // including EnqueueNDRangeKernel and clEnqueueCopyBuffer.
-class Timestamp {
+class Timestamp : public amd::HeapObject {
  private:
-  uint64_t start_;
-  uint64_t end_;
-  ProfilingSignal* profilingSignal_;
-  hsa_agent_t agent_;
   static double ticksToTime_;
-  bool splittedDispatch_;
-  std::vector<hsa_signal_t> splittedSignals_;
+
+  uint64_t    start_;
+  uint64_t    end_;
+  VirtualGPU* gpu_;               //!< Virtual GPU, associated with this timestamp
+  const amd::Command& command_;   //!< Command, associated with this timestamp
+  std::vector<ProfilingSignal*> signals_;
 
  public:
+  Timestamp(VirtualGPU* gpu, const amd::Command& command)
+    : start_(std::numeric_limits<uint64_t>::max())
+    , end_(0)
+    , gpu_(gpu)
+    , command_(command) {}
+
+  virtual ~Timestamp() {}
+
   uint64_t getStart() {
     checkGpuTime();
     return start_;
@@ -85,61 +100,14 @@ class Timestamp {
     return end_;
   }
 
-  void setProfilingSignal(ProfilingSignal* signal) {
-    profilingSignal_ = signal;
-    if (splittedDispatch_) {
-      splittedSignals_.push_back(profilingSignal_->signal_);
-    }
-  }
-  const ProfilingSignal* getProfilingSignal() const { return profilingSignal_; }
+  void AddProfilingSignal(ProfilingSignal* signal) { signals_.push_back(signal); }
 
-  void setAgent(hsa_agent_t agent) { agent_ = agent; }
+  const std::vector<ProfilingSignal*>& Signals() const { return signals_; }
 
-  Timestamp()
-    : start_(0)
-    , end_(0)
-    , profilingSignal_(nullptr)
-    , splittedDispatch_(false) {
-    agent_.handle = 0;
-  }
-
-  ~Timestamp() {}
+  const bool HwProfiling() const { return !signals_.empty(); }
 
   //! Finds execution ticks on GPU
-  void checkGpuTime() {
-    if (profilingSignal_ != nullptr) {
-      hsa_amd_profiling_dispatch_time_t time;
-
-      if (splittedDispatch_) {
-        uint64_t start = UINT64_MAX;
-        uint64_t end = 0;
-        for (auto it = splittedSignals_.begin(); it < splittedSignals_.end(); it++) {
-          if (hsa_signal_load_relaxed(profilingSignal_->signal_) > 0) {
-            WaitForSignal(*it);
-          }
-          hsa_amd_profiling_get_dispatch_time(agent_, *it, &time);
-          if (time.start < start) {
-            start = time.start;
-          }
-          if (time.end > end) {
-            end = time.end;
-          }
-        }
-        start_ = start * ticksToTime_;
-        end_ = end * ticksToTime_;
-      } else {
-        // If the signalValue is the same as initial set value, it means its not written to
-        if (hsa_signal_load_relaxed(profilingSignal_->signal_) > 0) {
-          WaitForSignal(profilingSignal_->signal_);
-        }
-        hsa_amd_profiling_get_dispatch_time(agent_, profilingSignal_->signal_, &time);
-        start_ = time.start * ticksToTime_;
-        end_ = time.end * ticksToTime_;
-      }
-      profilingSignal_->ts_ = nullptr;
-      profilingSignal_ = nullptr;
-    }
-  }
+  void checkGpuTime();
 
   // Start a timestamp (get timestamp from OS)
   void start() { start_ = amd::Os::timeNanos(); }
@@ -147,11 +115,14 @@ class Timestamp {
   // End a timestamp (get timestamp from OS)
   void end() { end_ = amd::Os::timeNanos(); }
 
-  bool isSplittedDispatch() const { return splittedDispatch_; }
-  void setSplittedDispatch() { splittedDispatch_ = true; }
-
   static void setGpuTicksToTime(double ticksToTime) { ticksToTime_ = ticksToTime; }
   static double getGpuTicksToTime() { return ticksToTime_; }
+
+  //! Returns amd::command assigned to this timestamp
+  const amd::Command& command() const { return command_; }
+
+  //! Returns virtual GPU device, used with this timestamp
+  VirtualGPU* gpu() const { return gpu_; }
 };
 
 class VirtualGPU : public device::VirtualDevice {
@@ -190,6 +161,58 @@ class VirtualGPU : public device::VirtualDevice {
     size_t endMemObjectsInQueue_;     //!< End of mem objects in the queue
     size_t numMemObjectsInQueue_;     //!< Number of mem objects in the queue
     size_t maxMemObjectsInQueue_;     //!< Maximum number of mem objects in the queue
+  };
+
+  class HwQueueTracker : public amd::EmbeddedObject {
+   public:
+    HwQueueTracker(const VirtualGPU& gpu): gpu_(gpu) {}
+
+    ~HwQueueTracker();
+
+    //! Creates a pool of signals for tracking of HW operations on the queue
+    bool Create();
+
+    //! Finds a free signal for the upcomming operation
+    hsa_signal_t ActiveSignal(hsa_signal_value_t init_val = kInitSignalValueOne,
+                              Timestamp* ts = nullptr, uint32_t queue_size = 0);
+
+    //! Wait for the curent active signal. Can idle the queue
+    bool WaitCurrent() { return CpuWaitForSignal(signal_list_[current_id_]); }
+
+    //! Update current active engine
+    void SetActiveEngine(HwQueueEngine engine = HwQueueEngine::Compute) { engine_ = engine; }
+
+    //! Returns the last submitted signal for a wait
+    hsa_signal_t* WaitingSignal(HwQueueEngine engine = HwQueueEngine::Compute);
+
+    //! Resets current signal back to the previous one. It's necessary in a case of ROCr failure.
+    void ResetCurrentSignal();
+
+    //! Inserts an external signal(submission in another queue) for dependency tracking
+    void SetExternalSignal(ProfilingSignal* signal) {
+      external_signal_ = signal;
+      engine_ = HwQueueEngine::External;
+    }
+
+    //! Inserts an external signal(submission in another queue) for dependency tracking
+    ProfilingSignal* GetLastSignal() const { return signal_list_[current_id_]; }
+
+  private:
+    //! Wait for the next active signal
+    void WaitNext() {
+      size_t next = (current_id_ + 1) % signal_list_.size();
+      CpuWaitForSignal(signal_list_[next]);
+    }
+
+    //! Wait for the provided signal
+    bool CpuWaitForSignal(ProfilingSignal* signal);
+
+    HwQueueEngine engine_ = HwQueueEngine::Unknown; //!< Engine used in the current operations
+    std::vector<ProfilingSignal*> signal_list_;     //!< The pool of all signals for processing
+    ProfilingSignal*  external_signal_ = nullptr;   //!< Dependency on external signal
+    size_t current_id_ = 0;       //!< Last submitted signal
+    bool sdma_profiling_ = false; //!< If TRUE, then SDMA profiling is enabled
+    const VirtualGPU& gpu_;       //!< VirtualGPU, associated with this tracker
   };
 
   VirtualGPU(Device& device, bool profiling = false, bool cooperative = false,
@@ -256,9 +279,9 @@ class VirtualGPU : public device::VirtualDevice {
    *
    * @return bool true if Wait returned successfully, false otherwise
    */
-  bool releaseGpuMemoryFence(bool force_barrier    = false);
+  bool releaseGpuMemoryFence(bool force_barrier = false, bool skip_copy_wait = false);
 
-  hsa_agent_t gpu_device() { return gpu_device_; }
+  hsa_agent_t gpu_device() const { return gpu_device_; }
   hsa_queue_t* gpu_queue() { return gpu_queue_; }
 
   // Return pointer to PrintfDbg
@@ -290,12 +313,14 @@ class VirtualGPU : public device::VirtualDevice {
   amd::Memory* findPinnedMem(void* addr, size_t size);
 
   void enableSyncBlit() const;
-  bool isLastCommandSDMA() const { return isLastCommandSDMA_; }
-  void setLastCommandSDMA(bool s) { isLastCommandSDMA_ = s; }
 
   void hasPendingDispatch() { hasPendingDispatch_ = true; }
   void addSystemScope() { addSystemScope_ = true; }
   void SetCopyCommandType(cl_command_type type) { copy_command_type_ = type; }
+
+  HwQueueTracker& Barriers() { return barriers_; }
+
+  Timestamp* timestamp() const { return timestamp_; }
 
   // } roc OpenCL integration
  private:
@@ -306,17 +331,14 @@ class VirtualGPU : public device::VirtualDevice {
   template <typename AqlPacket> bool dispatchGenericAqlPacket(AqlPacket* packet, uint16_t header,
                                                               uint16_t rest, bool blocking,
                                                               size_t size = 1);
-  void dispatchBarrierPacket(const hsa_barrier_and_packet_t* packet);
-  void dispatchGenericBarrierPacket(hsa_barrier_and_packet_t* packet, uint16_t packetHeader,
-                             hsa_signal_t signal);
   void dispatchBarrierPacket(hsa_barrier_and_packet_t* packet, uint16_t packetHeader,
-                             hsa_signal_t signal);
+                             bool skipSignal = false);
   bool dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet, const uint32_t gfxVersion,
                                 bool blocking, const hsa_ven_amd_aqlprofile_1_00_pfn_t* extApi);
   void initializeDispatchPacket(hsa_kernel_dispatch_packet_t* packet,
                                 amd::NDRangeContainer& sizes);
 
-  bool initPool(size_t kernarg_pool_size, uint signal_pool_count);
+  bool initPool(size_t kernarg_pool_size);
   void destroyPool();
 
   void* allocKernArg(size_t size, size_t alignment);
@@ -367,8 +389,7 @@ class VirtualGPU : public device::VirtualDevice {
       uint32_t profiling_          : 1; //!< Profiling is enabled
       uint32_t cooperative_        : 1; //!< Cooperative launch is enabled
       uint32_t addSystemScope_     : 1; //!< Insert a system scope to the next aql
-      uint32_t isLastCommandSDMA_  : 1; //!< Keep track if the last command was SDMA and 
-                                               //!< not send Barrier packets if barrier_sync is 0
+      uint32_t tracking_created_   : 1; //!< Enabled if tracking object was properly initialized
     };
     uint32_t  state_;
   };
@@ -379,8 +400,7 @@ class VirtualGPU : public device::VirtualDevice {
   hsa_agent_t gpu_device_;  //!< Physical device
   hsa_queue_t* gpu_queue_;  //!< Queue associated with a gpu
   hsa_barrier_and_packet_t barrier_packet_;
-  hsa_signal_t barrier_signal_;
-  hsa_signal_t last_signal_ = {};  //!< Last submitted signal
+
   uint32_t dispatch_id_;  //!< This variable must be updated atomically.
   Device& roc_device_;    //!< roc device object
   PrintfDbg* printfdbg_;
@@ -396,12 +416,12 @@ class VirtualGPU : public device::VirtualDevice {
   hsa_queue_t* schedulerQueue_;
   hsa_signal_t schedulerSignal_;
 
+  HwQueueTracker  barriers_;      //!< Tracks active barriers in ROCr
+
   char* kernarg_pool_base_;
   size_t kernarg_pool_size_;
   uint kernarg_pool_cur_offset_;
 
-  std::vector<ProfilingSignal> signal_pool_;  //!< Pool of signals for profiling
-  uint32_t current_signal_ = 0;               //!< Current avaialble signal in the pool
   friend class Timestamp;
 
   //  PM4 packet for gfx8 performance counter

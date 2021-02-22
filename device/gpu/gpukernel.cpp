@@ -643,11 +643,8 @@ bool NullKernel::create(const std::string& code, const std::string& metadata,
 
   if ((binaryCode == NULL) && (binarySize == 0) && !code.empty()) {
     acl_error err;
-    std::string arch = "amdil";
-    if (nullDev().settings().use64BitPtr_) {
-      arch += "64";
-    }
-    aclTargetInfo info = aclGetTargetInfo(arch.c_str(), nullDev().hwInfo()->targetName_, &err);
+    aclTargetInfo info = aclGetTargetInfo(nullDev().settings().use64BitPtr_ ? "amdil64" : "amdil",
+                                          nullDev().isa().amdIlName(), &err);
     if (err != ACL_SUCCESS) {
       LogWarning("aclGetTargetInfo failed");
       return false;
@@ -1007,7 +1004,7 @@ bool NullKernel::createMultiBinary(uint* imageSize, void** image, const void* is
     constBuffers[constBufferCount++].index = nullProg().glbCb()[i];
   }
 
-  encoding.machine = nullDev().hwInfo()->machine_;
+  encoding.machine = nullDev().calMachine();
   encoding.type = ED_ATI_CAL_TYPE_COMPUTE;
   encoding.inputCount = inputResourceCount;
   encoding.outputCount = outputCount;
@@ -3045,7 +3042,7 @@ void HSAILKernel::initHsailArgs(const aclArgData* aclArg) {
 
 HSAILKernel::HSAILKernel(std::string name, HSAILProgram* prog, std::string compileOptions,
                          uint extraArgsNum)
-    : device::Kernel(prog->dev(), name, *prog),
+    : device::Kernel(prog->device(), name, *prog),
       compileOptions_(compileOptions),
       index_(0),
       code_(NULL),
@@ -3095,7 +3092,9 @@ bool HSAILKernel::init(amd::hsa::loader::Symbol* sym, bool finalize) {
     }
   }
 
-  aqlCreateHWInfo(sym);
+  if (!aqlCreateHWInfo(sym)) {
+    return false;
+  }
 
   // Pull out metadata from the ELF
   size_t sizeOfArgList;

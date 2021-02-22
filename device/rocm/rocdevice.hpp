@@ -110,7 +110,7 @@ class NullDevice : public amd::Device {
   NullDevice(){};
 
   //! create the device
-  bool create(const AMDDeviceInfo& deviceInfo);
+  bool create(const amd::Isa &isa);
 
   //! Initialise all the offline devices that can be used for compilation
   static bool init();
@@ -122,17 +122,10 @@ class NullDevice : public amd::Device {
 
   Compiler* compiler() const { return compilerHandle_; }
 
-  const Settings& settings() const { return reinterpret_cast<Settings&>(*settings_); }
+  const Settings& settings() const { return static_cast<Settings&>(*settings_); }
 
   //! Construct an HSAIL program object from the ELF assuming it is valid
   virtual device::Program* createProgram(amd::Program& owner, amd::option::Options* options = nullptr);
-  const AMDDeviceInfo& deviceInfo() const { return deviceInfo_; }
-  //! Gets the backend device for the Null device type
-  virtual hsa_agent_t getBackendDevice() const {
-    ShouldNotReachHere();
-    const hsa_agent_t kInvalidAgent = {0};
-    return kInvalidAgent;
-  }
 
   // List of dummy functions which are disabled for NullDevice
 
@@ -238,8 +231,6 @@ class NullDevice : public amd::Device {
   static bool destroyCompiler();
   //! Handle to the the compiler
   static Compiler* compilerHandle_;
-  //! Device Id for an HsaDevice
-  AMDDeviceInfo deviceInfo_;
 
  private:
   static constexpr bool offlineDevice_ = true;
@@ -249,6 +240,7 @@ struct AgentInfo {
   hsa_agent_t agent;
   hsa_amd_memory_pool_t fine_grain_pool;
   hsa_amd_memory_pool_t coarse_grain_pool;
+  hsa_amd_memory_pool_t kern_arg_pool;
 };
 
 //! A HSA device ordinal (physical HSA device)
@@ -309,11 +301,7 @@ class Device : public NullDevice {
 
   static bool loadHsaModules();
 
-  bool create();
-
-  //! Construct a new physical HSA device
-  Device(hsa_agent_t bkendDevice);
-  virtual hsa_agent_t getBackendDevice() const { return _bkendDevice; }
+  hsa_agent_t getBackendDevice() const { return _bkendDevice; }
   const hsa_agent_t &getCpuAgent() const { return cpu_agent_; } // Get the CPU agent with the least NUMA distance to this GPU
 
   static const std::vector<hsa_agent_t>& getGpuAgents() { return gpu_agents_; }
@@ -375,7 +363,8 @@ class Device : public NullDevice {
   //! Gets free memory on a GPU device
   virtual bool globalFreeMemory(size_t* freeMemory) const;
 
-  virtual void* hostAlloc(size_t size, size_t alignment, bool atomics = false) const;
+  virtual void* hostAlloc(size_t size, size_t alignment,
+                          MemorySegment mem_seg = MemorySegment::kNoAtomics) const;
 
   virtual void hostFree(void* ptr, size_t size = 0) const;
 
@@ -501,6 +490,11 @@ class Device : public NullDevice {
   void getGlobalCUMask(std::string cuMaskStr);
 
  private:
+  bool create();
+
+  //! Construct a new physical HSA device
+  Device(hsa_agent_t bkendDevice);
+
   bool SetSvmAttributesInt(const void* dev_ptr, size_t count, amd::MemoryAdvice advice,
                            bool first_alloc = false, bool use_cpu = false) const;
   static constexpr hsa_signal_value_t InitSignalValue = 1;
@@ -520,11 +514,13 @@ class Device : public NullDevice {
   std::vector<Device*> enabled_p2p_devices_;  //!< List of user enabled P2P devices for this device
   mutable std::mutex lock_allow_access_; //!< To serialize allow_access calls
   hsa_agent_t _bkendDevice;
+  uint32_t pciDeviceId_;
   hsa_agent_t* p2p_agents_list_;
   hsa_profile_t agent_profile_;
   hsa_amd_memory_pool_t group_segment_;
   hsa_amd_memory_pool_t system_segment_;
   hsa_amd_memory_pool_t system_coarse_segment_;
+  hsa_amd_memory_pool_t system_kernarg_segment_;
   hsa_amd_memory_pool_t gpuvm_segment_;
   hsa_amd_memory_pool_t gpu_fine_grained_segment_;
   hsa_signal_t prefetch_signal_;    //!< Prefetch signal, used to explicitly prefetch SVM on device

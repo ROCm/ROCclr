@@ -183,59 +183,74 @@ void Event::processCallbacks(int32_t status) const {
   }
 }
 
+void Event::waitForCompletion() {
+  ClPrint(LOG_DEBUG, LOG_WAIT, "waiting for event %p to complete, current status %d", this, status());
+  auto* queue = command().queue();
+  if ((queue != nullptr) && queue->vdev()->ActiveWait()) {
+    while (status() > CL_COMPLETE) {
+      amd::Os::yield();
+    }
+  } else {
+    ScopedLock lock(lock_);
+
+    // Wait until the status becomes CL_COMPLETE or negative.
+    while (status() > CL_COMPLETE) {
+      lock_.wait();
+    }
+  }
+  ClPrint(LOG_DEBUG, LOG_WAIT, "event %p wait completed", this);
+}
+
 bool Event::awaitCompletion() {
   if (status() > CL_COMPLETE) {
     // Notifies current command queue about waiting
-    if (!notifyCmdQueue()) {
+    Command* command = notifyCmdQueue(true);
+    if (command == nullptr) {
       return false;
-    }
-
-    ClPrint(LOG_DEBUG, LOG_WAIT, "waiting for event %p to complete, current status %d", this, status());
-    auto* queue = command().queue();
-    if ((queue != nullptr) && queue->vdev()->ActiveWait()) {
-      while (status() > CL_COMPLETE) {
-        amd::Os::yield();
-      }
     } else {
-      ScopedLock lock(lock_);
-
-      // Wait until the status becomes CL_COMPLETE or negative.
-      while (status() > CL_COMPLETE) {
-        lock_.wait();
-      }
+      command->waitForCompletion();
+      auto status = command->status();
+      command->release();
+      return status == CL_COMPLETE;
     }
-    ClPrint(LOG_DEBUG, LOG_WAIT, "event %p wait completed", this);
   }
-
+  // Command is already completed
   return status() == CL_COMPLETE;
 }
 
-bool Event::notifyCmdQueue() {
+Command* Event::notifyCmdQueue(bool retain) {
   HostQueue* queue = command().queue();
   if ((status() > CL_COMPLETE) && (NULL != queue) && !notified_.test_and_set()) {
     // Make sure the queue is draining the enqueued commands.
-    amd::Command* command = new amd::Marker(*queue, false, nullWaitList, this);
-    if (command == NULL) {
+    amd::Command* internalCommand = new amd::Marker(*queue, false, nullWaitList, this);
+    if (internalCommand == NULL) {
       notified_.clear();
-      return false;
+      return nullptr;
     }
     ClPrint(LOG_DEBUG, LOG_CMD, "queue marker to command queue: %p", queue);
-    command->enqueue();
-    command->release();
+    internalCommand->enqueue();
+    // if retain is false, release the command here, else release in the caller function
+    if (!retain) {
+      internalCommand->release();
+    }
+    return internalCommand;
   }
-  return true;
+  if (retain) {
+    this->retain();
+  }
+  return &command();
 }
 
 const Event::EventWaitList Event::nullWaitList(0);
 
+// ================================================================================================
 Command::Command(HostQueue& queue, cl_command_type type,
                  const EventWaitList& eventWaitList, uint32_t commandWaitBits)
     : Event(queue),
       queue_(&queue),
-      next_(NULL),
+      next_(nullptr),
       type_(type),
-      exception_(0),
-      data_(NULL),
+      data_(nullptr),
       eventWaitList_(eventWaitList),
       commandWaitBits_(commandWaitBits) {
   // Retain the commands from the event wait list.
@@ -243,6 +258,7 @@ Command::Command(HostQueue& queue, cl_command_type type,
   if (type != 0) activity_.Initialize(type, queue.vdev()->index(), queue.device().index());
 }
 
+// ================================================================================================
 void Command::releaseResources() {
   const Command::EventWaitList& events = eventWaitList();
 
@@ -250,6 +266,7 @@ void Command::releaseResources() {
   std::for_each(events.begin(), events.end(), std::mem_fun(&Command::release));
 }
 
+// ================================================================================================
 void Command::enqueue() {
   assert(queue_ != NULL && "Cannot be enqueued");
 
@@ -262,16 +279,28 @@ void Command::enqueue() {
   // Direct dispatch logic below will submit the command immediately, but the command status
   // update will occur later after flush() with a wait
   if (AMD_DIRECT_DISPATCH) {
+    setStatus(CL_QUEUED);
+    // The wait should be performed before the lock,
+    // otherwise signal handler may have a deadlock, but awaitCompletion() is thread safe itself
+    std::for_each(eventWaitList().begin(), eventWaitList().end(),
+        std::mem_fun(&Command::awaitCompletion));
+
     // The batch update must be lock protected to avoid a race condition
     // when multiple threads submit/flush/update the batch at the same time
-    ScopedLock sl(queue_->lock());
+    ScopedLock sl(queue_->vdev()->execution());
     queue_->FormSubmissionBatch(this);
     if ((type() == CL_COMMAND_MARKER || type() == 0) && !profilingInfo().marker_ts_) {
-      // Flush the current batch and wait for the results, since it's a marker.
-      // @todo: The condition requires a reevaluation to determine if any marker needs a wait.
+      // The current HSA signal tracking logic requires profiling enabled for the markers
+      EnableProfiling();
+      // Update batch head for the current marker. Hence the status of all commands can be
+      // updated upon the marker completion
+      SetBatchHead(queue_->GetSubmittionBatch());
+      // Flush the current batch, but skip the wait on CPU if possible to avoid a stall
       queue_->vdev()->flush(queue_->GetSubmittionBatch());
+      // The batch will be tracked with the marker now
       queue_->ResetSubmissionBatch();
     } else {
+      setStatus(CL_SUBMITTED);
       submit(*queue_->vdev());
     }
   } else {
@@ -284,6 +313,7 @@ void Command::enqueue() {
   }
 }
 
+// ================================================================================================
 const Context& Command::context() const { return queue_->context(); }
 
 NDRangeKernelCommand::NDRangeKernelCommand(HostQueue& queue, const EventWaitList& eventWaitList,

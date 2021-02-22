@@ -430,7 +430,7 @@ PerfCounter::PerfCounter(const Device& device,   //!< A ROC device object
   info_.eventIndex_ = eventIndex;       // Counter Event Selection (counter_id)
 
   // these block indices are valid for the SI (Gfx8) & Gfx9 devices
-  switch (roc_device_.deviceInfo().gfxipMajor_) {
+  switch (roc_device_.isa().versionMajor()) {
     case (8):
       gfxVersion_ = ROC_GFX8;
       if (blockIndex < viBlockIdOrcaToRocr.size()) {
@@ -550,7 +550,8 @@ bool PerfCounterProfile::initialize() {
   }
 
   if (cmd_buf.ptr == nullptr) {
-    void *buf_ptr = roc_device_.hostAlloc(profile_.command_buffer.size, alignment, 1);
+    void *buf_ptr = roc_device_.hostAlloc(profile_.command_buffer.size, alignment,
+                                          Device::MemorySegment::kAtomics);
     if (buf_ptr != nullptr) {
       profile_.command_buffer.ptr = buf_ptr;
     }
@@ -565,7 +566,8 @@ bool PerfCounterProfile::initialize() {
   }
 
   if (out_buf.ptr == nullptr) {
-    void *buf_ptr = roc_device_.hostAlloc(profile_.output_buffer.size, alignment, 1);
+    void *buf_ptr = roc_device_.hostAlloc(profile_.output_buffer.size, alignment,
+                                          Device::MemorySegment::kAtomics);
     if (buf_ptr != nullptr) {
       profile_.output_buffer.ptr = buf_ptr;
     }

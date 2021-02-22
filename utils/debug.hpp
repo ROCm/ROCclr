@@ -23,7 +23,8 @@
 
 
 #include <cassert>
-#include <string.h>
+#include <cstring>
+#include <cstdio>
 #include <cstdint>
 //! \addtogroup Utils
 #ifdef _WIN32
@@ -58,6 +59,9 @@ enum LogMask {
   LOG_ALWAYS    = 0xFFFFFFFF, //!< Log always even mask flag is zero
 };
 
+//! \brief log file output
+extern FILE* outFile;
+
 //! \cond ignore
 extern "C" void breakpoint();
 //! \endcond
@@ -90,13 +94,16 @@ extern void log_printf(LogLevel level, const char* file, int line, uint64_t *sta
 #endif  // __INTEL_COMPILER
 
 //! \brief Abort the program if the invariant \a cond is false.
-#define guarantee(cond)                                                                            \
+#define guarantee(cond, ...)                                                                       \
   if (!(cond)) {                                                                                   \
-    amd::report_fatal(__FILE__, __LINE__, "guarantee(" XSTR(cond) ")");                            \
+    if(strlen(#__VA_ARGS__) == 0)                                                                  \
+      amd::report_fatal(__FILE__, __LINE__,  XSTR(cond) );                                         \
+    else                                                                                           \
+      amd::report_fatal(__FILE__, __LINE__,  XSTR(__VA_ARGS__) );                                  \
     amd::breakpoint();                                                                             \
   }
 
-#define fixme_guarantee(cond) guarantee(cond)
+#define fixme_guarantee(cond, ...) guarantee(cond, __VA_ARGS__)
 
 //! \brief Abort the program with a fatal error message.
 #define fatal(msg)                                                                                 \

@@ -175,7 +175,7 @@ int32_t Program::addDeviceProgram(Device& device, const void* image, size_t leng
     const device::Program* same_dev_prog = nullptr;
     if ((amd::IS_HIP) && (same_prog != nullptr)) {
       auto same_dev_prog_map_ = same_prog->devicePrograms();
-      guarantee(same_dev_prog_map_.size() == 1);
+      guarantee(same_dev_prog_map_.size() == 1, "For same_prog, devicePrograms size != 1");
       same_dev_prog = same_dev_prog_map_.begin()->second;
     }
 
@@ -555,7 +555,7 @@ int32_t Program::build(const std::vector<Device*>& devices, const char* options,
     if (devProgram->buildStatus() != CL_BUILD_NONE) {
       continue;
     }
-    int32_t result = devProgram->build(sourceCode_, options, &parsedOptions);
+    int32_t result = devProgram->build(sourceCode_, options, &parsedOptions, precompiledHeaders_);
 
     // Check if the previous device failed a build
     if ((result != CL_SUCCESS) && (retval != CL_SUCCESS)) {

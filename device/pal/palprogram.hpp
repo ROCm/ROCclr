@@ -157,8 +157,16 @@ class HSAILProgram : public device::Program {
 
   const std::vector<Memory*>& globalStores() const { return globalStores_; }
 
-  //! Return a typecasted GPU device
-  pal::Device& dev() { return const_cast<pal::Device&>(static_cast<const pal::Device&>(device())); }
+  //! Return a typecasted PAL null device.
+  pal::NullDevice& palNullDevice() {
+    return const_cast<pal::NullDevice&>(static_cast<const pal::NullDevice&>(device()));
+  }
+
+  //! Return a typecasted PAL device. The device must not be the NullDevice.
+  pal::Device& palDevice() {
+    assert(!isNull());
+    return const_cast<pal::Device&>(static_cast<const pal::Device&>(device()));
+  }
 
   //! Returns GPU kernel table
   const Memory* kernelTable() const { return kernels_; }
@@ -180,6 +188,7 @@ class HSAILProgram : public device::Program {
 
   //! Returns CPU address for a kernel
   uint64_t findHostKernelAddress(uint64_t devAddr) const {
+    assert(!isNull());
     return loader_->FindHostAddress(devAddr);
   }
 
@@ -193,7 +202,7 @@ class HSAILProgram : public device::Program {
 
   virtual bool createBinary(amd::option::Options* options);
 
-  virtual const aclTargetInfo& info(const char* str = "");
+  virtual const aclTargetInfo& info();
 
   virtual bool setKernels(amd::option::Options* options, void* binary, size_t binSize,
                           amd::Os::FileDesc fdesc = amd::Os::FDescInit(), size_t foffset = 0,
@@ -241,7 +250,6 @@ class LightningProgram : public HSAILProgram {
   LightningProgram(NullDevice& device, amd::Program& owner) : HSAILProgram(device, owner) {
     isLC_ = true;
     isHIP_ = (owner.language() == amd::Program::HIP);
-    machineTarget_ = dev().hwInfo()->machineTargetLC_;
   }
 
   LightningProgram(Device& device, amd::Program& owner) : HSAILProgram(device, owner) {

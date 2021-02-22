@@ -82,7 +82,6 @@ Program::Program(amd::Device& device, amd::Program& owner)
       lastBuildOptionsArg_(),
       buildStatus_(CL_BUILD_NONE),
       buildError_(CL_SUCCESS),
-      machineTarget_(nullptr),
       globalVariableTotalSize_(0),
       programOptions_(nullptr)
 {
@@ -119,10 +118,11 @@ void Program::clear() {
 
 // ================================================================================================
 bool Program::compileImpl(const std::string& sourceCode,
-  const std::vector<const std::string*>& headers,
-  const char** headerIncludeNames, amd::option::Options* options) {
+                          const std::vector<const std::string*>& headers,
+                          const char** headerIncludeNames, amd::option::Options* options,
+                          const std::vector<std::string>& preCompiledHeaders) {
   if (isLC()) {
-    return compileImplLC(sourceCode, headers, headerIncludeNames, options);
+    return compileImplLC(sourceCode, headers, headerIncludeNames, options, preCompiledHeaders);
   } else {
     return compileImplHSAIL(sourceCode, headers, headerIncludeNames, options);
   }
@@ -213,6 +213,33 @@ amd_comgr_status_t Program::extractByteCodeBinary(const amd_comgr_data_set_t inD
   return AMD_COMGR_STATUS_SUCCESS;
 }
 
+amd_comgr_status_t Program::addPreCompiledHeader(
+    amd_comgr_data_set_t* dataSet, const std::vector<std::string>& preCompiledHeaders) {
+  amd_comgr_status_t status = AMD_COMGR_STATUS_SUCCESS;
+  if (preCompiledHeaders.size() > 0) {
+    for (auto& i : preCompiledHeaders) {
+      amd_comgr_data_t pch_data;
+      status = amd::Comgr::create_data(AMD_COMGR_DATA_KIND_PRECOMPILED_HEADER, &pch_data);
+      if (status != AMD_COMGR_STATUS_SUCCESS) {
+        return status;
+      }
+
+      status = amd::Comgr::set_data(pch_data, i.size(), i.c_str());
+
+      if (status == AMD_COMGR_STATUS_SUCCESS) {
+        status = amd::Comgr::set_data_name(pch_data, "PreCompiledHeader");
+      }
+
+      if (status == AMD_COMGR_STATUS_SUCCESS) {
+        status = amd::Comgr::data_set_add(*dataSet, pch_data);
+      }
+
+      amd::Comgr::release_data(pch_data);
+    }
+  }
+  return status;
+}
+
 amd_comgr_status_t Program::addCodeObjData(const char *source,
                                            const size_t size,
                                            const amd_comgr_data_kind_t type,
@@ -286,7 +313,7 @@ amd_comgr_status_t Program::createAction(const amd_comgr_language_t oclver,
   }
 
   if (status == AMD_COMGR_STATUS_SUCCESS) {
-    status = amd::Comgr::action_info_set_isa_name(*action, device().info().targetId_);
+    status = amd::Comgr::action_info_set_isa_name(*action, device().isa().isaName().c_str());
   }
 
   if (status == AMD_COMGR_STATUS_SUCCESS) {
@@ -522,7 +549,7 @@ bool Program::compileAndLinkExecutable(const amd_comgr_data_set_t inputs,
     }
   }
 
-  //  Create the relocatiable data set
+  //  Create the relocatable data set
   if (status == AMD_COMGR_STATUS_SUCCESS) {
     status = amd::Comgr::create_data_set(&relocatableData);
   }
@@ -570,7 +597,8 @@ bool Program::compileAndLinkExecutable(const amd_comgr_data_set_t inputs,
 
 bool Program::compileImplLC(const std::string& sourceCode,
                             const std::vector<const std::string*>& headers,
-                            const char** headerIncludeNames, amd::option::Options* options) {
+                            const char** headerIncludeNames, amd::option::Options* options,
+                            const std::vector<std::string>& preCompiledHeaders) {
 #if  defined(USE_COMGR_LIBRARY)
   const char* xLang = options->oVariables->XLang;
   if (xLang != nullptr) {
@@ -590,6 +618,13 @@ bool Program::compileImplLC(const std::string& sourceCode,
     buildLog_ += "Error: COMGR fails to create output buffer for LLVM bitcode.\n";
     return false;
   }
+
+  if (preCompiledHeaders.size() > 0)
+    if (addPreCompiledHeader(&inputs, preCompiledHeaders) != AMD_COMGR_STATUS_SUCCESS) {
+      buildLog_ += "Error: COMGR failed to add precompiled Headers.\n";
+      amd::Comgr::destroy_data_set(inputs);
+      return false;
+    }
 
   if (addCodeObjData(sourceCode.c_str(), sourceCode.length(), AMD_COMGR_DATA_KIND_SOURCE,
                      "CompileSource", &inputs) != AMD_COMGR_STATUS_SUCCESS) {
@@ -670,6 +705,23 @@ bool Program::compileImplLC(const std::string& sourceCode,
       buildLog_ += "Warning: opening the file to dump the OpenCL source failed.\n";
     }
   }
+  // Append Options provided by user to driver options
+  if (isHIP()) {
+    if (options->origOptionStr.size()) {
+      std::istringstream userOptions{options->origOptionStr};
+      std::copy(std::istream_iterator<std::string>(userOptions),
+                std::istream_iterator<std::string>(), std::back_inserter(driverOptions));
+    }
+  }
+
+  // Append Options provided by user to driver options
+  if (isHIP()) {
+    if (options->origOptionStr.size()) {
+      std::istringstream userOptions{options->origOptionStr};
+      std::copy(std::istream_iterator<std::string>(userOptions),
+                std::istream_iterator<std::string>(), std::back_inserter(driverOptions));
+    }
+  }
 
   // Compile source to IR
   char* binaryData = nullptr;
@@ -719,8 +771,14 @@ bool Program::compileImplHSAIL(const std::string& sourceCode,
   acl_error errorCode;
   aclTargetInfo target;
 
-  std::string arch = LP64_SWITCH("hsail", "hsail64");
-  target = aclGetTargetInfo(arch.c_str(), machineTarget_, &errorCode);
+  const char* arch = LP64_SWITCH("hsail", "hsail64");
+  const char* hsailName = device().isa().hsailName();
+  if (!hsailName) {
+    // HSAIL compiler does not support device's ISA.
+    LogPrintfError("HSAIL compiler does not support %s", device().isa().targetId());
+    return false;
+  }
+  target = aclGetTargetInfo(arch, hsailName, &errorCode);
 
   // end if asic info is ready
   // We dump the source code for each program (param: headers)
@@ -1107,7 +1165,7 @@ bool Program::linkImplLC(amd::option::Options* options) {
         linkOptions.push_back("correctly_rounded_sqrt");
     }
     if (options->oVariables->DenormsAreZero || AMD_GPU_FORCE_SINGLE_FP_DENORM == 0 ||
-        (device().info().gfxipMajor_ < 9 && AMD_GPU_FORCE_SINGLE_FP_DENORM < 0)) {
+        (device().isa().versionMajor() < 9 && AMD_GPU_FORCE_SINGLE_FP_DENORM < 0)) {
         linkOptions.push_back("daz_opt");
     }
     if (options->oVariables->FiniteMathOnly || options->oVariables->FastRelaxedMath) {
@@ -1365,9 +1423,7 @@ bool Program::initBuild(amd::option::Options* options) {
     return false;
   }
 
-  const char* devName = machineTarget_;
-  options->setPerBuildInfo((devName && (devName[0] != '\0')) ? devName : "gpu",
-    clBinary()->getEncryptCode(), true);
+  options->setPerBuildInfo(device().isa().targetId(), clBinary()->getEncryptCode(), true);
 
   // Elf Binary setup
   std::string outFileName;
@@ -1439,7 +1495,7 @@ int32_t Program::compile(const std::string& sourceCode,
 
   // Compile the source code if any
   if ((buildStatus_ == CL_BUILD_IN_PROGRESS) && !sourceCode.empty() &&
-      !compileImpl(sourceCode, headers, headerIncludeNames, options)) {
+      !compileImpl(sourceCode, headers, headerIncludeNames, options, {})) {
     buildStatus_ = CL_BUILD_ERROR;
     if (buildLog_.empty()) {
       buildLog_ = "Internal error: Compilation failed.";
@@ -1598,7 +1654,8 @@ int32_t Program::link(const std::vector<Program*>& inputPrograms, const char* or
 
 // ================================================================================================
 int32_t Program::build(const std::string& sourceCode, const char* origOptions,
-                       amd::option::Options* options) {
+                       amd::option::Options* options,
+                       const std::vector<std::string>& preCompiledHeaders) {
   uint64_t start_time = 0;
   if (options->oVariables->EnableBuildTiming) {
     buildLog_ = "\nStart timing major build components.....\n\n";
@@ -1638,9 +1695,10 @@ int32_t Program::build(const std::string& sourceCode, const char* origOptions,
   bool compileStatus = true;
   if ((buildStatus_ == CL_BUILD_IN_PROGRESS) && !sourceCode.empty()) {
     if (!headerIncludeNames.empty()) {
-      compileStatus = compileImpl(sourceCode, headers, &headerIncludeNames[0], options);
+      compileStatus =
+          compileImpl(sourceCode, headers, &headerIncludeNames[0], options, preCompiledHeaders);
     } else {
-      compileStatus = compileImpl(sourceCode, headers, nullptr, options);
+      compileStatus = compileImpl(sourceCode, headers, nullptr, options, preCompiledHeaders);
     }
   }
   if (!compileStatus) {
@@ -1703,17 +1761,26 @@ int32_t Program::build(const std::string& sourceCode, const char* origOptions,
 
 // ================================================================================================
 std::vector<std::string> Program::ProcessOptions(amd::option::Options* options) {
-  std::string scratchStr;
   std::vector<std::string> optionsVec;
 
   if (!isLC()) {
     optionsVec.push_back("-D__AMD__=1");
 
-    scratchStr.clear();
-    optionsVec.push_back(scratchStr.append("-D__").append(machineTarget_).append("__=1"));
+    std::string processorName = device().isa().processorName();
+    const char* hsailName = device().isa().hsailName();
+    const char* amdIlName = device().isa().amdIlName();
 
-    scratchStr.clear();
-    optionsVec.push_back(scratchStr.append("-D__").append(machineTarget_).append("=1"));
+    optionsVec.push_back(std::string("-D__") + processorName + "__=1");
+    optionsVec.push_back(std::string("-D__") + processorName + "=1");
+    if (hsailName && (strcmp(hsailName, processorName.c_str()) != 0)) {
+      optionsVec.push_back(std::string("-D__") + hsailName + "__=1");
+      optionsVec.push_back(std::string("-D__") + hsailName + "=1");
+    }
+    if (amdIlName && (strcmp(amdIlName, processorName.c_str()) != 0) &&
+        (!hsailName || strcmp(amdIlName, hsailName) != 0)) {
+      optionsVec.push_back(std::string("-D__") + amdIlName + "__=1");
+      optionsVec.push_back(std::string("-D__") + amdIlName + "=1");
+    }
 
     // Set options for the standard device specific options
     // All our devices support these options now
@@ -1725,9 +1792,7 @@ std::vector<std::string> Program::ProcessOptions(amd::option::Options* options) 
     }
   } else {
 
-    if (isHIP()) {
-      optionsVec.push_back("-D__HIP_ROCclr__=1");
-    } else {
+    if (!isHIP()) {
       int major, minor;
       ::sscanf(device().info().version_, "OpenCL %d.%d ", &major, &minor);
       std::stringstream ss;
@@ -1787,8 +1852,7 @@ std::vector<std::string> Program::ProcessOptions(amd::option::Options* options) 
       }
     } else {
       for (auto e : extensions) {
-        scratchStr.clear();
-        optionsVec.push_back(scratchStr.append("-D").append(e).append("=1"));
+        optionsVec.push_back(std::string("-D") + e + "=1");
       }
     }
   }

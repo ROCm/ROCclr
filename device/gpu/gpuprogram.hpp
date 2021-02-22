@@ -138,7 +138,7 @@ class NullProgram : public device::Program {
  protected:
   /*! \brief Compiles GPU CL program to LLVM binary (compiler frontend)
    *
-   *  \return True if we successefully compiled a GPU program
+   *  \return True if we successfully compiled a GPU program
    */
   virtual bool compileImpl(const std::string& sourceCode,  //!< the program's source code
                            const std::vector<const std::string*>& headers,  //!< header souce codes
@@ -168,21 +168,21 @@ class NullProgram : public device::Program {
 
   /*! \brief Parses the GPU program and finds all available kernels
    *
-   *  \return True if we successefully parsed the GPU program
+   *  \return True if we successfully parsed the GPU program
    */
   bool parseKernels(const std::string& source  //! the program's source code
                     );
 
   /*! \brief Parse all functions in the program
    *
-   *  \return True if we successefully parsed all functions
+   *  \return True if we successfully parsed all functions
    */
   bool parseAllILFuncs(const std::string& source  //! the program's source code
                        );
 
   /*! \brief Parse a function's metadata given as source[posBegin:posEnd-1]
    *
-   *  \return True if we successefully parsed the given metadata
+   *  \return True if we successfully parsed the given metadata
    */
   bool parseFuncMetadata(const std::string& source,  //! string that contains metadata
                          size_t posBegin,            //! begin of metadata in 'source'
@@ -192,7 +192,7 @@ class NullProgram : public device::Program {
   /*! \brief Finds functions with the given start and end string in the
    * program
    *
-   *  \return True if we successefully found all functions
+   *  \return True if we successfully found all functions
    */
   bool findILFuncs(const std::string& source,      //! the program's source code
                    const std::string& func_start,  //! the start string of a function
@@ -272,7 +272,7 @@ class NullProgram : public device::Program {
   std::vector<device::PrintfInfo> printf_;  //!< Format strings for GPU printf support
   std::vector<uint> glbCb_;         //!< Global constant buffers
 
-  virtual const aclTargetInfo& info(const char* str = "");
+  virtual const aclTargetInfo& info();
 
   virtual bool saveBinaryAndSetType(type_t type) { return true; }
 
@@ -289,7 +289,7 @@ class NullProgram : public device::Program {
                       );
 
   //! Return a typecasted GPU device
-  gpu::NullDevice& dev() {
+  gpu::NullDevice& gpuNullDevice() {
     return const_cast<gpu::NullDevice&>(static_cast<const gpu::NullDevice&>(device()));
   }
 
@@ -339,9 +339,6 @@ class Program : public NullProgram {
   //! Returns pritnf info array
   const std::vector<device::PrintfInfo>& printfInfo() const { return printf_; }
 
-  //! Return a typecasted GPU device
-  gpu::Device& dev() { return const_cast<gpu::Device&>(static_cast<const gpu::Device&>(device())); }
-
  protected:
  private:
   //! Disable copy constructor
@@ -349,6 +346,12 @@ class Program : public NullProgram {
 
   //! Disable operator=
   Program& operator=(const Program&);
+
+  //! Return a typecasted GPU device
+  gpu::Device& gpuDevice() {
+    assert(!isNull());
+    return const_cast<gpu::Device&>(static_cast<const gpu::Device&>(device()));
+  }
 
   HwConstBuffers constBufs_;  //!< Constant buffers for the global store
   gpu::Memory* glbData_;      //!< Global data store
@@ -467,8 +470,11 @@ class HSAILProgram : public device::Program {
 
   const std::vector<Memory*>& globalStores() const { return globalStores_; }
 
-  //! Return a typecasted GPU device
-  gpu::Device& dev() { return const_cast<gpu::Device&>(static_cast<const gpu::Device&>(device())); }
+  //! Return a typecasted GPU device. The device must not be the NullDevice.
+  gpu::Device& gpuDevice() {
+    assert(!isNull());
+    return const_cast<gpu::Device&>(static_cast<const gpu::Device&>(device()));
+  }
 
   //! Returns GPU kernel table
   const Memory* kernelTable() const { return kernels_; }
@@ -492,7 +498,7 @@ class HSAILProgram : public device::Program {
 
   virtual bool createBinary(amd::option::Options* options);
 
-  virtual const aclTargetInfo& info(const char* str = "");
+  virtual const aclTargetInfo& info();
 
  private:
   //! Disable default copy constructor
@@ -507,6 +513,11 @@ class HSAILProgram : public device::Program {
 
   //! Allocate kernel table
   bool allocKernelTable();
+
+  //! Return a typecasted GPU null device.
+  gpu::NullDevice& gpuNullDevice() {
+    return const_cast<gpu::NullDevice&>(static_cast<const gpu::NullDevice&>(device()));
+  }
 
   void* rawBinary_;                    //!< Pointer to the raw binary
   std::vector<Memory*> globalStores_;  //!< Global memory for the program

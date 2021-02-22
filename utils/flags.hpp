@@ -244,6 +244,12 @@ release(bool, ROC_ACTIVE_WAIT, false,                                         \
         "Forces unconditional active wait for GPU")                           \
 release(bool, ROC_ENABLE_LARGE_BAR, true,                                     \
         "Enable Large Bar if supported by the device")                        \
+release(bool, ROC_CPU_WAIT_FOR_SIGNAL, true,                                  \
+        "Enable CPU wait for dependent HSA signals.")                         \
+release(bool, ROC_SYSTEM_SCOPE_SIGNAL, true,                                  \
+        "Enable system scope for signals (uses interrupts).")                 \
+release(bool, ROC_SKIP_COPY_SYNC, false,                                      \
+        "Skips copy syncs if runtime can predict the same engine.")           \
 release(bool, HIP_FORCE_QUEUE_PROFILING, false,                               \
         "Force command queue profiling by default")                           \
 release(uint, PAL_FORCE_ASIC_REVISION, 0,                                     \
@@ -252,7 +258,9 @@ release(bool, PAL_EMBED_KERNEL_MD, false,                                     \
         "Enables writing kernel metadata into command buffers.")              \
 release(cstring, ROC_GLOBAL_CU_MASK, "",                                      \
         "Sets a global CU mask (entered as hex value) for all queues,"        \
-        "Each active bit represents using one CU (e.g., 0xf enables only 4 CUs)")
+        "Each active bit represents using one CU (e.g., 0xf enables only 4 CUs)") \
+release(cstring, AMD_LOG_LEVEL_FILE, "",                                       \
+        "Set output file for AMD_LOG_LEVEL, Default is stderr")
 
 namespace amd {
 

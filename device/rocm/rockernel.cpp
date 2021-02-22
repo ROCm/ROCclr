@@ -31,7 +31,7 @@ Kernel::Kernel(std::string name, Program* prog, const uint64_t& kernelCodeHandle
                const uint32_t workgroupGroupSegmentByteSize,
                const uint32_t workitemPrivateSegmentByteSize, const uint32_t kernargSegmentByteSize,
                const uint32_t kernargSegmentAlignment)
-    : device::Kernel(prog->dev(), name, *prog) {
+    : device::Kernel(prog->device(), name, *prog) {
   kernelCodeHandle_ = kernelCodeHandle;
   workgroupGroupSegmentByteSize_ = workgroupGroupSegmentByteSize;
   workitemPrivateSegmentByteSize_ = workitemPrivateSegmentByteSize;
@@ -40,7 +40,7 @@ Kernel::Kernel(std::string name, Program* prog, const uint64_t& kernelCodeHandle
 }
 
 Kernel::Kernel(std::string name, Program* prog)
-    : device::Kernel(prog->dev(), name, *prog) {
+    : device::Kernel(prog->device(), name, *prog) {
 }
 
 #if defined(USE_COMGR_LIBRARY)
@@ -57,10 +57,10 @@ bool LightningKernel::init() {
     symbolName_ = name();
   }
   kernargSegmentAlignment_ =
-      amd::alignUp(std::max(kernargSegmentAlignment_, 128u), dev().info().globalMemCacheLineSize_);
+      amd::alignUp(std::max(kernargSegmentAlignment_, 128u), device().info().globalMemCacheLineSize_);
 
   // Set the workgroup information for the kernel
-  workGroupInfo_.availableLDSSize_ = dev().info().localMemSizePerCU_;
+  workGroupInfo_.availableLDSSize_ = device().info().localMemSizePerCU_;
   assert(workGroupInfo_.availableLDSSize_ > 0);
 
   if (!SetAvailableSgprVgpr()) {
@@ -71,7 +71,7 @@ bool LightningKernel::init() {
   // Get the kernel code handle
   hsa_status_t hsaStatus;
   hsa_executable_symbol_t symbol;
-  hsa_agent_t agent = program()->hsaDevice();
+  hsa_agent_t agent = program()->rocDevice().getBackendDevice();
   hsaStatus = hsa_executable_get_symbol_by_name(program()->hsaExecutable(),
                                                 symbolName().c_str(),
                                                 &agent, &symbol);
@@ -142,8 +142,8 @@ bool LightningKernel::init() {
   }
 
   uint32_t wavefront_size = 0;
-  if (hsa_agent_get_info(program()->hsaDevice(), HSA_AGENT_INFO_WAVEFRONT_SIZE, &wavefront_size) !=
-      HSA_STATUS_SUCCESS) {
+  if (hsa_agent_get_info(program()->rocDevice().getBackendDevice(), HSA_AGENT_INFO_WAVEFRONT_SIZE,
+                         &wavefront_size) != HSA_STATUS_SUCCESS) {
     DevLogPrintfError("[ROC][Kernel] Cannot get Wavefront Size, failed with hsa_status: %d \n",
                       hsaStatus);
     return false;
@@ -155,7 +155,7 @@ bool LightningKernel::init() {
   workGroupInfo_.usedLDSSize_ = workgroupGroupSegmentByteSize_;
   workGroupInfo_.preferredSizeMultiple_ = wavefront_size;
   workGroupInfo_.usedStackSize_ = 0;
-  workGroupInfo_.wavefrontPerSIMD_ = program()->dev().info().maxWorkItemSizes_[0] / wavefront_size;
+  workGroupInfo_.wavefrontPerSIMD_ = program()->rocDevice().info().maxWorkItemSizes_[0] / wavefront_size;
   workGroupInfo_.wavefrontSize_ = wavefront_size;
   if (workGroupInfo_.size_ == 0) {
     return false;
@@ -177,11 +177,9 @@ bool LightningKernel::init() {
 #if defined(WITH_COMPILER_LIB)
 bool HSAILKernel::init() {
   acl_error errorCode;
-  // compile kernel down to ISA
-  hsa_agent_t hsaDevice = program()->hsaDevice();
   // Pull out metadata from the ELF
   size_t sizeOfArgList;
-  aclCompiler* compileHandle = program()->dev().compiler();
+  aclCompiler* compileHandle = program()->rocDevice().compiler();
   std::string openClKernelName("&__OpenCL_" + name() + "_kernel");
   errorCode = aclQueryInfo(compileHandle, program()->binaryElf(), RT_ARGUMENT_ARRAY,
                                          openClKernelName.c_str(), nullptr, &sizeOfArgList);
@@ -202,7 +200,7 @@ bool HSAILKernel::init() {
 
   // Set the workgroup information for the kernel
   memset(&workGroupInfo_, 0, sizeof(workGroupInfo_));
-  workGroupInfo_.availableLDSSize_ = program()->dev().info().localMemSizePerCU_;
+  workGroupInfo_.availableLDSSize_ = program()->rocDevice().info().localMemSizePerCU_;
   assert(workGroupInfo_.availableLDSSize_ > 0);
   workGroupInfo_.availableSGPRs_ = 104;
   workGroupInfo_.availableVGPRs_ = 256;
@@ -222,7 +220,8 @@ bool HSAILKernel::init() {
   }
 
   uint32_t wavefront_size = 0;
-  hsa_status_t hsaStatus = hsa_agent_get_info(program()->hsaDevice(), HSA_AGENT_INFO_WAVEFRONT_SIZE, &wavefront_size);
+  hsa_status_t hsaStatus = hsa_agent_get_info(program()->rocDevice().getBackendDevice(),
+                                              HSA_AGENT_INFO_WAVEFRONT_SIZE, &wavefront_size);
   if (HSA_STATUS_SUCCESS != hsaStatus) {
     DevLogPrintfError("Could not get Wave Info Size: %d, failed with hsa_status: %d \n",
                       errorCode, hsaStatus);
@@ -250,13 +249,13 @@ bool HSAILKernel::init() {
   }
 
   workGroupInfo_.usedStackSize_ = 0;
-  workGroupInfo_.wavefrontPerSIMD_ = program()->dev().info().maxWorkItemSizes_[0] / wavefront_size;
+  workGroupInfo_.wavefrontPerSIMD_ = program()->rocDevice().info().maxWorkItemSizes_[0] / wavefront_size;
   workGroupInfo_.wavefrontSize_ = wavefront_size;
   if (workGroupInfo_.compileSize_[0] != 0) {
     workGroupInfo_.size_ = workGroupInfo_.compileSize_[0] * workGroupInfo_.compileSize_[1] *
         workGroupInfo_.compileSize_[2];
   } else {
-    workGroupInfo_.size_ = program()->dev().info().preferredWorkGroupSize_;
+    workGroupInfo_.size_ = program()->rocDevice().info().preferredWorkGroupSize_;
   }
 
   // Pull out printf metadata from the ELF

@@ -126,8 +126,12 @@ bool Program::initClBinary(char* binaryIn, size_t size) {
 
 
 bool Program::defineGlobalVar(const char* name, void* dptr) {
+  if (!device().isOnline()) {
+    return false;
+  }
+
   hsa_status_t status = HSA_STATUS_SUCCESS;
-  hsa_agent_t hsa_device = dev().getBackendDevice();
+  hsa_agent_t hsa_device = rocDevice().getBackendDevice();
 
   status = hsa_executable_agent_global_variable_define(hsaExecutable_, hsa_device, name, dptr);
   if (status != HSA_STATUS_SUCCESS) {
@@ -141,6 +145,10 @@ bool Program::defineGlobalVar(const char* name, void* dptr) {
 
 bool Program::createGlobalVarObj(amd::Memory** amd_mem_obj, void** device_pptr,
                                  size_t* bytes, const char* global_name) const {
+  if (!device().isOnline()) {
+    return false;
+  }
+
   hsa_status_t status = HSA_STATUS_SUCCESS;
   const roc::Device* roc_device = nullptr;
   hsa_agent_t hsa_device;
@@ -153,7 +161,7 @@ bool Program::createGlobalVarObj(amd::Memory** amd_mem_obj, void** device_pptr,
     return false;
   }
 
-  hsa_device= dev().getBackendDevice();
+  hsa_device = rocDevice().getBackendDevice();
 
   /* Find HSA Symbol by name */
   status = hsa_executable_get_symbol_by_name(hsaExecutable_, global_name, &hsa_device,
@@ -206,7 +214,7 @@ bool Program::createGlobalVarObj(amd::Memory** amd_mem_obj, void** device_pptr,
       return false;
     }
 
-    roc_device = static_cast<const roc::Device*>(&dev());
+    roc_device = &(rocDevice());
     *amd_mem_obj = new(roc_device->context()) amd::Buffer(roc_device->context(), 0, *bytes,
                                                           *device_pptr);
 
@@ -226,10 +234,8 @@ bool Program::createGlobalVarObj(amd::Memory** amd_mem_obj, void** device_pptr,
   return true;
 }
 
-HSAILProgram::HSAILProgram(roc::NullDevice& device, amd::Program& owner) : roc::Program(device, owner) {
-  machineTarget_ = dev().deviceInfo().machineTarget_;
-}
-
+HSAILProgram::HSAILProgram(roc::NullDevice& device, amd::Program& owner)
+    : roc::Program(device, owner) {}
 
 HSAILProgram::~HSAILProgram() {
 #if defined(WITH_COMPILER_LIB)
@@ -269,7 +275,7 @@ bool HSAILProgram::setKernels(amd::option::Options* options, void* binary, size_
 #if defined(WITH_COMPILER_LIB)
   // Stop compilation if it is an offline device - HSA runtime does not
   // support ISA compiled offline
-  if (!dev().isOnline()) {
+  if (!device().isOnline()) {
     return true;
   }
 
@@ -295,7 +301,7 @@ bool HSAILProgram::setKernels(amd::option::Options* options, void* binary, size_
     return false;
   }
 
-  hsa_agent_t hsaDevice = dev().getBackendDevice();
+  hsa_agent_t hsaDevice = rocDevice().getBackendDevice();
   status = hsa_executable_load_agent_code_object(hsaExecutable_, hsaDevice, hsaCodeObjectReader_,
                                                  nullptr, nullptr);
   if (status != HSA_STATUS_SUCCESS) {
@@ -433,7 +439,6 @@ LightningProgram::LightningProgram(roc::NullDevice& device, amd::Program& owner)
   : roc::Program(device, owner) {
   isLC_ = true;
   isHIP_ = (owner.language() == amd::Program::HIP);
-  machineTarget_ = dev().deviceInfo().machineTargetLC_;
 }
 
 bool LightningProgram::createBinary(amd::option::Options* options) {
@@ -471,6 +476,12 @@ bool LightningProgram::saveBinaryAndSetType(type_t type, void* rawBinary, size_t
 bool LightningProgram::setKernels(amd::option::Options* options, void* binary, size_t binSize,
                                   amd::Os::FileDesc fdesc, size_t foffset, std::string uri) {
 #if defined(USE_COMGR_LIBRARY)
+  // Stop compilation if it is an offline device - HSA runtime does not
+  // support ISA compiled offline
+  if (!device().isOnline()) {
+    return true;
+  }
+
   // Find the size of global variables from the binary
   if (!FindGlobalVarSize(binary, binSize)) {
     buildLog_ += "Error: Cannot Global Var Sizes ";
@@ -478,7 +489,7 @@ bool LightningProgram::setKernels(amd::option::Options* options, void* binary, s
     return false;
   }
 
-  hsa_agent_t agent = dev().getBackendDevice();
+  hsa_agent_t agent = rocDevice().getBackendDevice();
   hsa_status_t status;
 
   status = hsa_executable_create_alt(HSA_PROFILE_FULL, HSA_DEFAULT_FLOAT_ROUNDING_MODE_DEFAULT,

@@ -199,8 +199,9 @@ void Memory::cpuUnmap(device::VirtualDevice& vDev) {
                                     amd::Coord3D(size()), true)) {
       LogError("[OCL] Fail sync the device memory on cpuUnmap");
     }
+    // Wait on CPU for the transfer
+    static_cast<roc::VirtualGPU&>(vDev).releaseGpuMemoryFence();
   }
-
   decIndMapCount();
 }
 
@@ -695,7 +696,7 @@ void Buffer::destroy() {
 // ================================================================================================
 bool Buffer::create() {
   if (owner() == nullptr) {
-    deviceMemory_ = dev().hostAlloc(size(), 1, false);
+    deviceMemory_ = dev().hostAlloc(size(), 1, Device::MemorySegment::kNoAtomics);
     if (deviceMemory_ != nullptr) {
       flags_ |= HostMemoryDirectAccess;
       return true;
@@ -729,12 +730,14 @@ bool Buffer::create() {
           // GPU accessible or prefetch memory into GPU
           dev().SvmAllocInit(deviceMemory_, size());
 #else
-          deviceMemory_ = dev().hostAlloc(size(), 1, false);
+          deviceMemory_ = dev().hostAlloc(size(), 1, Device::MemorySegment::kNoAtomics);
 #endif // AMD_HMM_SUPPORT
         } else if (memFlags & CL_MEM_FOLLOW_USER_NUMA_POLICY) {
           deviceMemory_ = dev().hostNumaAlloc(size(), 1, (memFlags & CL_MEM_SVM_ATOMICS) != 0);
         } else {
-          deviceMemory_ = dev().hostAlloc(size(), 1, (memFlags & CL_MEM_SVM_ATOMICS) != 0);
+          deviceMemory_ = dev().hostAlloc(size(), 1, ((memFlags & CL_MEM_SVM_ATOMICS) != 0)
+                                                       ? Device::MemorySegment::kAtomics
+                                                       : Device::MemorySegment::kNoAtomics);
         }
       } else {
         assert(!isHostMemDirectAccess() && "Runtime doesn't support direct access to GPU memory!");
@@ -744,14 +747,6 @@ bool Buffer::create() {
     } else {
       deviceMemory_ = owner()->getSvmPtr();
       kind_ = MEMORY_KIND_PTRGIVEN;
-#if AMD_HMM_SUPPORT
-      if (memFlags & CL_MEM_ALLOC_HOST_PTR) {
-        // Currently HMM requires cirtain initial calls to mark sysmem allocation as
-        // GPU accessible or prefetch memory into the current device
-        // @note: Skip any allocaiton here, since sysmem was allocated on another device.
-        dev().SvmAllocInit(deviceMemory_, size());
-      }
-#endif // AMD_HMM_SUPPORT
     }
 
     if ((deviceMemory_ != nullptr) && (dev().settings().apuSystem_ || !isFineGrain)) {
@@ -817,7 +812,7 @@ bool Buffer::create() {
         return true;
       }
 
-      deviceMemory_ = dev().hostAlloc(size(), 1, false);
+      deviceMemory_ = dev().hostAlloc(size(), 1, Device::MemorySegment::kNoAtomics);
       owner()->setHostMem(deviceMemory_);
 
       if ((deviceMemory_ != nullptr) && dev().settings().apuSystem_) {
@@ -1056,7 +1051,7 @@ bool Image::createInteropImage() {
   }
 
   if (obj->getGLTarget() == GL_TEXTURE_CUBE_MAP) {
-    desc.setFace(obj->getCubemapFace(), dev().deviceInfo().gfxipMajor_);
+    desc.setFace(obj->getCubemapFace(), dev().isa().versionMajor());
   }
 
   hsa_status_t err =
@@ -1109,7 +1104,7 @@ bool Image::create() {
   }
 
   if (originalDeviceMemory_ == nullptr) {
-    originalDeviceMemory_ = dev().hostAlloc(alloc_size, 1, false);
+    originalDeviceMemory_ = dev().hostAlloc(alloc_size, 1, Device::MemorySegment::kNoAtomics);
     if ((originalDeviceMemory_ != nullptr) && dev().settings().apuSystem_) {
       const_cast<Device&>(dev()).updateFreeMemory(alloc_size, false);
     }
