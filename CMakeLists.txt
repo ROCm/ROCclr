@@ -1,3 +1,23 @@
+# Copyright (C) 2017-2021 Advanced Micro Devices, Inc. All Rights Reserved.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
 cmake_minimum_required(VERSION 3.5)
 
 project(ROCclr VERSION "1.0.0" LANGUAGES C CXX)
@@ -32,11 +52,6 @@ write_basic_package_version_file("${ROCCLR_VERSION_PATH}"
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/cmake" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/modules")
 
-option(ADDRESS_SANITIZER "Build Address Sanitizer" OFF)
-if (ADDRESS_SANITIZER)
-  set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
-endif()
-
 # FIXME: Handling legacy custom boolean matching "yes" or "no"
 if(DEFINED USE_COMGR_LIBRARY)
   if(${USE_COMGR_LIBRARY} MATCHES "yes")
@@ -57,7 +72,7 @@ find_package(amd_comgr REQUIRED CONFIG
 )
 message(STATUS "Code Object Manager found at ${amd_comgr_DIR}.")
 
-find_package(hsa-runtime64 REQUIRED CONFIG
+find_package(hsa-runtime64 1.3 REQUIRED CONFIG
    PATHS
      /opt/rocm/
    PATH_SUFFIXES
@@ -120,6 +135,13 @@ if(DEV_LOG_ENABLE MATCHES "yes")
   add_definitions(-DDEV_LOG_ENABLE)
 endif()
 
+option(BUILD_LINUXPRO "Build LinuxPro" OFF)
+if (BUILD_LINUXPRO)
+  message(STATUS "Building LinuxPro")
+  add_definitions(-DROCCLR_DISABLE_PREVEGA)
+  add_definitions(-DROCCLR_ENABLE_GL_SHARING)
+endif()
+
 option(BUILD_PAL "Build PAL backend" OFF)
 if (BUILD_PAL)
   add_subdirectory(device/pal)
@@ -147,6 +169,7 @@ set(oclruntime_src
   device/devprogram.cpp
   device/devhcprintf.cpp
   device/devhcmessages.cpp
+  device/devhostcall.cpp
   platform/activity.cpp
   platform/kernel.cpp
   platform/context.cpp

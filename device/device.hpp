@@ -36,6 +36,7 @@
 #include "amdocl/cl_profile_amd.h"
 #include "acl.h"
 #include "hwdebug.hpp"
+#include "devsignal.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -80,6 +81,7 @@ class SvmMapMemoryCommand;
 class SvmUnmapMemoryCommand;
 class SvmPrefetchAsyncCommand;
 class TransferBufferFileCommand;
+class StreamOperationCommand;
 class HwDebugManager;
 class Isa;
 class Device;
@@ -571,6 +573,9 @@ struct Info : public amd::EmbeddedObject {
 
   //! global CU mask which will be applied to all queues created on this device
   std::vector<uint32_t> globalCUMask_;
+
+  //! AQL Barrier Value Packet support
+  bool aqlBarrierValue_;
 };
 
 //! Device settings
@@ -1191,6 +1196,7 @@ class VirtualDevice : public amd::HeapObject {
   virtual void submitSvmPrefetchAsync(amd::SvmPrefetchAsyncCommand& cmd) {
     ShouldNotReachHere();
   }
+  virtual void submitStreamOperation(amd::StreamOperationCommand& cmd) { ShouldNotReachHere(); }
   //! Get the blit manager object
   device::BlitManager& blitMgr() const { return *blitMgr_; }
 
@@ -1597,6 +1603,9 @@ class Device : public RuntimeObject {
       const device::Memory& parent  //!< Parent device memory object for the view
       ) const = 0;
 
+  ///! Allocates a device signal object
+  virtual device::Signal* createSignal() const = 0;
+
   //! Return true if initialized external API interop, otherwise false
   virtual bool bindExternalDevice(
       uint flags,             //!< Enum val. for ext.API type: GL, D3D10, etc.
@@ -1767,12 +1776,12 @@ class Device : public RuntimeObject {
   //! Checks if OCL runtime can use code object manager for compilation
   bool ValidateComgr();
 
-  virtual bool IpcCreate(void* dev_ptr, size_t* mem_size, void* handle) {
+  virtual bool IpcCreate(void* dev_ptr, size_t* mem_size, void* handle, size_t* mem_offset) const {
     ShouldNotReachHere();
     return false;
   }
 
-  virtual bool IpcAttach(const void* handle, size_t mem_size,
+  virtual bool IpcAttach(const void* handle, size_t mem_size, size_t mem_offset,
                          unsigned int flags, void** dev_ptr) const {
     ShouldNotReachHere();
     return false;

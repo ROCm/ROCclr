@@ -36,7 +36,6 @@ class Device;
 class Memory;
 class Timestamp;
 
-
 struct ProfilingSignal : public amd::HeapObject {
   hsa_signal_t  signal_;  //!< HSA signal to track profiling information
   Timestamp*    ts_;      //!< Timestamp object associated with the signal
@@ -50,20 +49,31 @@ struct ProfilingSignal : public amd::HeapObject {
 };
 
 // Initial HSA signal value
-constexpr hsa_signal_value_t kInitSignalValueOne = 1;
+constexpr static hsa_signal_value_t kInitSignalValueOne = 1;
 
+// Timeouts for HSA signal wait
+constexpr static uint64_t kTimeout30us = 30000;
+constexpr static uint64_t kTimeout50us = 50000;
+constexpr static uint64_t kUnlimitedWait = std::numeric_limits<uint64_t>::max();
+
+template <uint64_t wait_time = 0>
 inline bool WaitForSignal(hsa_signal_t signal) {
-  constexpr uint64_t Timeout30us = 30000;
-  constexpr uint64_t UnlimitedWait = std::numeric_limits<uint64_t>::max();
-  uint64_t timeout = (ROC_ACTIVE_WAIT) ? UnlimitedWait : Timeout30us;
-
-  // Active wait with a timeout
-  if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
-    // Wait until the completion with CPU suspend
+  if (wait_time != 0) {
     if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                  UnlimitedWait, HSA_WAIT_STATE_BLOCKED) != 0) {
+                                  wait_time, HSA_WAIT_STATE_ACTIVE) != 0) {
       return false;
+    }
+  } else {
+    uint64_t timeout = (ROC_ACTIVE_WAIT) ? kUnlimitedWait : kTimeout30us;
+
+    // Active wait with a timeout
+    if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
+                                  timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
+      // Wait until the completion with CPU suspend
+      if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
+                                    kUnlimitedWait, HSA_WAIT_STATE_BLOCKED) != 0) {
+        return false;
+      }
     }
   }
   return true;
@@ -88,7 +98,7 @@ class Timestamp : public amd::HeapObject {
     , gpu_(gpu)
     , command_(command) {}
 
-  virtual ~Timestamp() {}
+  ~Timestamp() {}
 
   uint64_t getStart() {
     checkGpuTime();
@@ -226,7 +236,7 @@ class VirtualGPU : public device::VirtualDevice {
   void profilingBegin(amd::Command& command, bool drmProfiling = false);
   void profilingEnd(amd::Command& command);
 
-  void updateCommandsState(amd::Command* list);
+  void updateCommandsState(amd::Command* list) const;
 
   void submitReadMemory(amd::ReadMemoryCommand& cmd);
   void submitWriteMemory(amd::WriteMemoryCommand& cmd);
@@ -251,6 +261,7 @@ class VirtualGPU : public device::VirtualDevice {
 
   void flush(amd::Command* list = nullptr, bool wait = false);
   void submitFillMemory(amd::FillMemoryCommand& cmd);
+  void submitStreamOperation(amd::StreamOperationCommand& cmd);
   void submitMigrateMemObjects(amd::MigrateMemObjectsCommand& cmd);
 
   void submitSvmFreeMemory(amd::SvmFreeMemoryCommand& cmd);
@@ -335,6 +346,8 @@ class VirtualGPU : public device::VirtualDevice {
                              bool skipSignal = false);
   bool dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet, const uint32_t gfxVersion,
                                 bool blocking, const hsa_ven_amd_aqlprofile_1_00_pfn_t* extApi);
+  void dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t* packet,
+                                  hsa_amd_vendor_packet_header_t header);
   void initializeDispatchPacket(hsa_kernel_dispatch_packet_t* packet,
                                 amd::NDRangeContainer& sizes);
 

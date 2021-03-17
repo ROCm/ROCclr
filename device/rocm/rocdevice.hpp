@@ -165,6 +165,11 @@ class NullDevice : public amd::Device {
     return nullptr;
   }
 
+  virtual device::Signal* createSignal() const {
+    ShouldNotReachHere();
+    return nullptr;
+  }
+
   //! Just returns nullptr for the dummy device
   virtual void* svmAlloc(amd::Context& context,   //!< The context used to create a buffer
                          size_t size,             //!< size of svm spaces
@@ -340,6 +345,8 @@ class Device : public NullDevice {
     return nullptr;
   }
 
+  virtual device::Signal* createSignal() const;
+
   //! Acquire external graphics API object in the host thread
   //! Needed for OpenGL objects on CPU device
   virtual bool bindExternalDevice(uint flags, void* const pDevice[], void* pContext,
@@ -437,8 +444,8 @@ class Device : public NullDevice {
   // Update the global free memory size
   void updateFreeMemory(size_t size, bool free);
 
-  virtual bool IpcCreate(void* dev_ptr, size_t* mem_size, void* handle);
-  virtual bool IpcAttach(const void* handle, size_t mem_size,
+  virtual bool IpcCreate(void* dev_ptr, size_t* mem_size, void* handle, size_t* mem_offset) const;
+  virtual bool IpcAttach(const void* handle, size_t mem_size, size_t mem_offset,
                          unsigned int flags, void** dev_ptr) const;
   virtual bool IpcDetach (void* dev_ptr) const;
 

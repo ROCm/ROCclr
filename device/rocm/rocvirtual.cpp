@@ -18,6 +18,7 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE. */
 
+#include "device/devhostcall.hpp"
 #include "device/rocm/rocdevice.hpp"
 #include "device/rocm/rocvirtual.hpp"
 #include "device/rocm/rockernel.hpp"
@@ -27,9 +28,9 @@
 #include "platform/kernel.hpp"
 #include "platform/context.hpp"
 #include "platform/command.hpp"
+#include "platform/command_utils.hpp"
 #include "platform/memory.hpp"
 #include "platform/sampler.hpp"
-#include "rochostcall.hpp"
 #include "utils/debug.hpp"
 #include "os/os.hpp"
 #include "amd_hsa_kernel_code.h"
@@ -90,6 +91,11 @@ static constexpr uint16_t kBarrierPacketReleaseHeader =
     (HSA_FENCE_SCOPE_NONE << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
+static constexpr uint16_t kBarrierVendorPacketHeader =
+    (HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE) | (1 << HSA_PACKET_HEADER_BARRIER) |
+    (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
+    (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
+
 static constexpr hsa_barrier_and_packet_t kBarrierAcquirePacket = {
     kBarrierPacketAcquireHeader, 0, 0, {{0}}, 0, {0}};
 
@@ -140,15 +146,13 @@ bool HsaAmdSignalHandler(hsa_signal_value_t value, void* arg) {
       ((thread = new amd::HostThread()) != nullptr && thread == amd::Thread::current()))) {
     return false;
   }
+  amd::ScopedLock sl(ts->gpu()->execution());
+  ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Handler: value(%d), timestamp(%p), handle(%lx)\n",
+    static_cast<uint32_t>(value), arg, ts->HwProfiling() ? ts->Signals()[0]->signal_.handle : 0);
+
   // Update the batch, since signal is complete
-  if (ts->Signals().size() > 0) {
-    amd::ScopedLock sl(ts->gpu()->execution());
-    ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Handler: value(%d), timestamp(%p), handle(%lx)\n",
-        static_cast<uint32_t>(value), arg, ts->Signals()[0]->signal_.handle);
-    ts->gpu()->updateCommandsState(ts->command().GetBatchHead());
-  } else {
-    LogError("Error: ROCr handler was called for untracked signal!");
-  }
+  ts->gpu()->updateCommandsState(ts->command().GetBatchHead());
+
   // Return false, so the callback will not be called again for this signal
   return false;
 }
@@ -325,6 +329,10 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
   prof_signal->done_ = false;
   prof_signal->engine_ = engine_;
   if (ts != 0) {
+    // Save HSA signal earlier to make sure the possible callback will have a valid
+    // value for processing
+    prof_signal->ts_ = ts;
+    ts->AddProfilingSignal(prof_signal);
     // If direct dispatch is enabled and the batch head isn't null, then it's a marker and
     // requires the batch update upon HSA signal completion
     if (AMD_DIRECT_DISPATCH && (ts->command().GetBatchHead() != nullptr)) {
@@ -341,8 +349,6 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
       hsa_amd_profiling_async_copy_enable(true);
       sdma_profiling_ = true;
     }
-    prof_signal->ts_ = ts;
-    ts->AddProfilingSignal(prof_signal);
   }
   return prof_signal->signal_;
 }
@@ -382,11 +388,15 @@ hsa_signal_t* VirtualGPU::HwQueueTracker::WaitingSignal(HwQueueEngine engine) {
     // Early signal status check
     if (hsa_signal_load_relaxed(prof_signal->signal_) > 0) {
       const Settings& settings = gpu_.dev().settings();
-      // Wait on CPU if requested
-      if (settings.cpu_wait_for_signal_) {
-        CpuWaitForSignal(prof_signal);
-      } else {
-        return &prof_signal->signal_;
+      // Actively wait on CPU for 50 us to avoid extra overheads of signal tracking on GPU
+      if (!WaitForSignal<kTimeout50us>(prof_signal->signal_)) {
+        if (settings.cpu_wait_for_signal_) {
+          // Wait on CPU for completion if requested
+          CpuWaitForSignal(prof_signal);
+        } else {
+          // Return HSA signal for tracking on GPU
+          return &prof_signal->signal_;
+        }
       }
     }
   }
@@ -1117,7 +1127,7 @@ void VirtualGPU::profilingEnd(amd::Command& command) {
 }
 
 // ================================================================================================
-void VirtualGPU::updateCommandsState(amd::Command* list) {
+void VirtualGPU::updateCommandsState(amd::Command* list) const {
   Timestamp* ts = nullptr;
 
   amd::Command* current = list;
@@ -2069,6 +2079,110 @@ void VirtualGPU::submitFillMemory(amd::FillMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
+void VirtualGPU::dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t* packet,
+                                            hsa_amd_vendor_packet_header_t header) {
+  assert(packet->completion_signal.handle != 0);
+  const uint32_t queueSize = gpu_queue_->size;
+  const uint32_t queueMask = queueSize - 1;
+
+  uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, 1);
+  while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= queueMask) {
+    amd::Os::yield();
+  }
+  hsa_amd_barrier_value_packet_t* aql_loc = &(reinterpret_cast<hsa_amd_barrier_value_packet_t*>(
+      gpu_queue_->base_address))[index & queueMask];
+  *aql_loc = *packet;
+  unsigned int* headerPtr = reinterpret_cast<unsigned int*>(&header);
+  __atomic_store_n(reinterpret_cast<uint32_t*>(aql_loc), *headerPtr, __ATOMIC_RELEASE);
+
+  hsa_signal_store_screlease(gpu_queue_->doorbell_signal, index);
+  ClPrint(amd::LOG_DEBUG, amd::LOG_AQL,
+          "[%zx] HWq=0x%zx, BarrierValue Header = 0x%x AmdFormat = 0x%x ",
+          "(type=%d, barrier=%d, acquire=%d, release=%d), "
+          "completion_signal=0x%zx value = 0x%llx mask = 0x%llx cond: %d (GTE: %d EQ: %d NE: %d)",
+          std::this_thread::get_id(), gpu_queue_, header.header, header.AmdFormat,
+          extractAqlBits(header.header, HSA_PACKET_HEADER_TYPE, HSA_PACKET_HEADER_WIDTH_TYPE),
+          extractAqlBits(header.header, HSA_PACKET_HEADER_BARRIER, HSA_PACKET_HEADER_WIDTH_BARRIER),
+          extractAqlBits(header.header, HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE,
+                         HSA_PACKET_HEADER_WIDTH_SCACQUIRE_FENCE_SCOPE),
+          extractAqlBits(header.header, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
+                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE),
+          packet->completion_signal, packet->value, packet->mask, packet->cond,
+          HSA_SIGNAL_CONDITION_GTE, HSA_SIGNAL_CONDITION_EQ, HSA_SIGNAL_CONDITION_NE);
+}
+
+void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
+  // Make sure VirtualGPU has an exclusive access to the resources
+  amd::ScopedLock lock(execution());
+  profilingBegin(cmd);
+
+  const cl_command_type type = cmd.type();
+  const int64_t value = cmd.value();
+  const uint64_t mask = cmd.mask();
+  const unsigned int flags = cmd.flags();
+  const size_t sizeBytes = cmd.sizeBytes();
+  const size_t offset = cmd.offset();
+
+  amd::Memory* amdMemory = &cmd.memory();
+  Memory* memory = dev().getRocMemory(amdMemory);
+
+  if (type == ROCCLR_COMMAND_STREAM_WAIT_VALUE) {
+    hsa_amd_barrier_value_packet_t aqlPacket;
+    hsa_amd_vendor_packet_header_t header;
+    hsa_signal_t signal;
+    Buffer* buff = static_cast<Buffer*>(memory);
+
+    header.header = kBarrierVendorPacketHeader;
+    header.AmdFormat = HSA_AMD_PACKET_TYPE_BARRIER_VALUE;
+    aqlPacket.signal = buff->getSignal();
+    aqlPacket.completion_signal = Barriers().ActiveSignal();
+
+    // mask is always applied on value at signal before performing
+    // the comparision defiend by 'condition'
+    switch (flags) {
+      case ROCCLR_STREAM_WAIT_VALUE_GTE:
+        aqlPacket.value = value;
+        aqlPacket.mask = mask;
+        aqlPacket.cond = HSA_SIGNAL_CONDITION_GTE;
+        break;
+      case ROCCLR_STREAM_WAIT_VALUE_EQ:
+        aqlPacket.value = value;
+        aqlPacket.mask = mask;
+        aqlPacket.cond = HSA_SIGNAL_CONDITION_EQ;
+        break;
+      case ROCCLR_STREAM_WAIT_VALUE_AND:
+        aqlPacket.value = 0;
+        aqlPacket.mask = (value & mask);
+        aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
+        break;
+      case ROCCLR_STREAM_WAIT_VALUE_NOR:
+        aqlPacket.value = ~value & mask;
+        aqlPacket.mask = ~value & mask;
+        aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
+        break;
+      default:
+        ShouldNotReachHere();
+        break;
+    }
+    dispatchBarrierValuePacket(&aqlPacket, header);
+  } else if (type == ROCCLR_COMMAND_STREAM_WRITE_VALUE) {
+    amd::Coord3D origin(offset);
+    amd::Coord3D size(sizeBytes);
+    bool entire = amdMemory->isEntirelyCovered(origin, size);
+
+    // Use GPU Blit to write
+    bool result = blitMgr().fillBuffer(*memory, &value, sizeBytes, origin, size, entire, true);
+    ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Writting value: 0x%lx \n", value);
+
+    if (!result) {
+      LogError("submitStreamOperation: Write failed!");
+    }
+  } else {
+    ShouldNotReachHere();
+  }
+  profilingEnd(cmd);
+}
+
 void VirtualGPU::submitSvmFillMemory(amd::SvmFillMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2688,6 +2802,7 @@ void VirtualGPU::submitNativeFn(amd::NativeFnCommand& cmd) {
   // std::cout<<__FUNCTION__<<" not implemented"<<"*********"<<std::endl;
 }
 
+// ================================================================================================
 void VirtualGPU::submitMarker(amd::Marker& vcmd) {
   if (vcmd.profilingInfo().marker_ts_) {
     profilingBegin(vcmd);
@@ -2697,11 +2812,16 @@ void VirtualGPU::submitMarker(amd::Marker& vcmd) {
       // for cache flushes explicitly and helps wall time
       uint16_t header = kNopPacketHeader;
       dispatchBarrierPacket(&barrier_packet_, header);
+      // Direct dispatch requires a barrier with callback and hasPendingDispatch_ triggers that
+      if (AMD_DIRECT_DISPATCH) {
+        hasPendingDispatch_ = true;
+      }
     }
     profilingEnd(vcmd);
   }
 }
 
+// ================================================================================================
 void VirtualGPU::submitAcquireExtObjects(amd::AcquireExtObjectsCommand& vcmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2733,17 +2853,27 @@ void VirtualGPU::flush(amd::Command* list, bool wait) {
   if (skip_cpu_wait) {
     // Search for the last command in the batch to track GPU state
     amd::Command* current = list;
+    // HIP tests expect callbacks processed from another thread, hence force AQL barrier always, so
+    // HSA signal callback will process HIP callback asynchronously
+    if (list->Callback() != nullptr) {
+      hasPendingDispatch_ = true;
+    }
     while (current->getNext() != nullptr) {
       current = current->getNext();
+      if (current->Callback() != nullptr) {
+        hasPendingDispatch_ = true;
+      }
     }
+
     // Enable profiling, so runtime can track TS
     profilingBegin(*current);
 
     // If runtime didn't submit a barrier, then it can't track the completion of the batch.
     // Hence runtime either has to insert a barrier unconditionally or have a CPU wait.
     // Due to performance impact of extra barriers CPU wait is selected.
-    // CPU wait is also forced if pinned buffers were used
-    skip_cpu_wait &= hasPendingDispatch_ && (pinnedMems_.size() == 0);
+    // Note: if callback will be selected to update the batch status,
+    // then the host thread can't update it also, otherwise double free may occur
+    skip_cpu_wait &= hasPendingDispatch_;
 
     releaseGpuMemoryFence(force_barrier, skip_cpu_wait);
     profilingEnd(*current);
@@ -2796,14 +2926,18 @@ void VirtualGPU::addPinnedMem(amd::Memory* mem) {
   //! @note: ROCr backend doesn't have per resource busy tracking, hence runtime has to wait
   //!        unconditionally, before it can release pinned memory
   releaseGpuMemoryFence();
-  if (nullptr == findPinnedMem(mem->getHostMem(), mem->getSize())) {
-    if (pinnedMems_.size() > 7) {
-      pinnedMems_.front()->release();
-      pinnedMems_.erase(pinnedMems_.begin());
-    }
+  if (!AMD_DIRECT_DISPATCH) {
+    if (nullptr == findPinnedMem(mem->getHostMem(), mem->getSize())) {
+      if (pinnedMems_.size() > 7) {
+        pinnedMems_.front()->release();
+        pinnedMems_.erase(pinnedMems_.begin());
+      }
 
-    // Delay destruction
-    pinnedMems_.push_back(mem);
+      // Delay destruction
+      pinnedMems_.push_back(mem);
+    }
+  } else {
+    mem->release();
   }
 }
 
@@ -2900,7 +3034,6 @@ void VirtualGPU::submitPerfCounter(amd::PerfCounterCommand& vcmd) {
     // Make sure all performance counter objects to use the same profile
     PerfCounter* counter = nullptr;
     for (uint i = 0; i < vcmd.getNumCounters(); ++i) {
-
       amd::PerfCounter* amdCounter = static_cast<amd::PerfCounter*>(counters[i]);
       counter = static_cast<PerfCounter*>(amdCounter->getDeviceCounter());
 

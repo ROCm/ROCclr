@@ -639,6 +639,12 @@ void Buffer::destroy() {
   #else
           dev().hostFree(deviceMemory_, size());;
   #endif // AMD_HMM_SUPPORT
+        } else if (memFlags & ROCCLR_MEM_HSA_SIGNAL_MEMORY) {
+          if (HSA_STATUS_SUCCESS != hsa_signal_destroy(signal_)) {
+            ClPrint(amd::LOG_DEBUG, amd::LOG_MEM,
+                    "[ROCClr] ROCCLR_MEM_HSA_SIGNAL_MEMORY signal destroy failed \n");
+          }
+          deviceMemory_ = nullptr;
         } else {
           dev().hostFree(deviceMemory_, size());
         }
@@ -734,6 +740,28 @@ bool Buffer::create() {
 #endif // AMD_HMM_SUPPORT
         } else if (memFlags & CL_MEM_FOLLOW_USER_NUMA_POLICY) {
           deviceMemory_ = dev().hostNumaAlloc(size(), 1, (memFlags & CL_MEM_SVM_ATOMICS) != 0);
+        } else if (memFlags & ROCCLR_MEM_HSA_SIGNAL_MEMORY) {
+          // TODO: ROCr will introduce a new attribute enum that implies a non-blocking signal,
+          // replace "HSA_AMD_SIGNAL_AMD_GPU_ONLY" with this new enum when it is ready.
+          if (HSA_STATUS_SUCCESS !=
+              hsa_amd_signal_create(kInitSignalValueOne, 0, nullptr, HSA_AMD_SIGNAL_AMD_GPU_ONLY,
+                                    &signal_)) {
+            ClPrint(amd::LOG_ERROR, amd::LOG_MEM,
+                    "[ROCclr] ROCCLR_MEM_HSA_SIGNAL_MEMORY signal creation failed");
+            return false;
+          }
+          volatile hsa_signal_value_t* signalValuePtr = nullptr;
+          if (HSA_STATUS_SUCCESS != hsa_amd_signal_value_pointer(signal_, &signalValuePtr)) {
+            ClPrint(amd::LOG_ERROR, amd::LOG_MEM,
+                    "[ROCclr] ROCCLR_MEM_HSA_SIGNAL_MEMORY pointer query failed");
+            return false;
+          }
+
+          deviceMemory_ = const_cast<long int*>(signalValuePtr);  // conversion to void * is
+                                                                  // implicit
+
+          // Disable host access to force blit path for memeory writes.
+          flags_ &= ~HostMemoryDirectAccess;
         } else {
           deviceMemory_ = dev().hostAlloc(size(), 1, ((memFlags & CL_MEM_SVM_ATOMICS) != 0)
                                                        ? Device::MemorySegment::kAtomics
@@ -1105,13 +1133,18 @@ bool Image::create() {
 
   if (originalDeviceMemory_ == nullptr) {
     originalDeviceMemory_ = dev().hostAlloc(alloc_size, 1, Device::MemorySegment::kNoAtomics);
-    if ((originalDeviceMemory_ != nullptr) && dev().settings().apuSystem_) {
-      const_cast<Device&>(dev()).updateFreeMemory(alloc_size, false);
+    if (originalDeviceMemory_ != nullptr) {
+      kind_ = MEMORY_KIND_HOST;
+      if (dev().settings().apuSystem_) {
+        const_cast<Device&>(dev()).updateFreeMemory(alloc_size, false);
+      }
     }
   }
   else {
     const_cast<Device&>(dev()).updateFreeMemory(alloc_size, false);
   }
+  //record real size of the buffer so we will release and count it correctly.
+  deviceImageInfo_.size = alloc_size;
 
   deviceMemory_ = reinterpret_cast<void*>(
       amd::alignUp(reinterpret_cast<uintptr_t>(originalDeviceMemory_), deviceImageInfo_.alignment));
@@ -1288,7 +1321,13 @@ void Image::destroy() {
 
   if (originalDeviceMemory_ != nullptr) {
     dev().memFree(originalDeviceMemory_, deviceImageInfo_.size);
-    const_cast<Device&>(dev()).updateFreeMemory(size(), true);
+    if (kind_ == MEMORY_KIND_HOST) {
+      if (dev().settings().apuSystem_) {
+        const_cast<Device&>(dev()).updateFreeMemory(deviceImageInfo_.size, true);
+      }
+    } else {
+      const_cast<Device&>(dev()).updateFreeMemory(deviceImageInfo_.size, true);
+    }
   }
 }
 

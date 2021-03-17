@@ -32,17 +32,18 @@
 
 #include "vdi_common.hpp"
 #include "device/comgrctx.hpp"
+#include "device/devhostcall.hpp"
 #include "device/rocm/rocdevice.hpp"
 #include "device/rocm/rocblit.hpp"
 #include "device/rocm/rocvirtual.hpp"
 #include "device/rocm/rocprogram.hpp"
 #include "device/rocm/rocmemory.hpp"
 #include "device/rocm/rocglinterop.hpp"
+#include "device/rocm/rocsignal.hpp"
 #ifdef WITH_AMDGPU_PRO
 #include "pro/prodriver.hpp"
 #endif
 #include "platform/sampler.hpp"
-#include "rochostcall.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -629,6 +630,14 @@ bool Device::create() {
                    isa_name.data());
     return false;
   }
+
+#if ROCCLR_DISABLE_PREVEGA
+  if (isa->versionMajor() < 9) {
+    LogPrintfError("Disabled HSA device %s (PCI ID %x) for ISA %s", agent_name, pciDeviceId_,
+                   isa_name.data());
+    return false;
+  }
+#endif
 
   if (HSA_STATUS_SUCCESS !=
       hsa_agent_get_info(_bkendDevice, HSA_AGENT_INFO_PROFILE, &agent_profile_)) {
@@ -1533,6 +1542,10 @@ bool Device::populateOCLDeviceConstants() {
     info_.pcieDeviceId_ = pciDeviceId_;
     info_.cooperativeGroups_ = settings().enableCoopGroups_;
     info_.cooperativeMultiDeviceGroups_ = settings().enableCoopMultiDeviceGroups_;
+
+    // TODO: Update this to use HSA API when it is ready. For now limiting this to gfx908
+    info_.aqlBarrierValue_ =
+        (isa().versionMajor() == 9 && isa().versionMinor() == 0 && isa().versionStepping() == 8);
   }
 
   info_.maxPipePacketSize_ = info_.maxMemAllocSize_;
@@ -1848,9 +1861,15 @@ device::Memory* Device::createMemory(amd::Memory& owner) const {
 void* Device::hostAlloc(size_t size, size_t alignment, MemorySegment mem_seg) const {
   void* ptr = nullptr;
 
-  hsa_amd_memory_pool_t segment;
+  hsa_amd_memory_pool_t segment{0};
   switch (mem_seg) {
-    case kKernArg :
+    case kKernArg : {
+      if (::strcmp(isa().processorName().c_str(), "gfx90a") == 0) {
+        segment = system_kernarg_segment_;
+        break;
+      }
+      // Falls through on else case.
+    }
     case kNoAtomics :
       // If runtime disables barrier, then all host allocations must have L2 disabled
       if ((settings().barrier_sync_) && (system_coarse_segment_.handle != 0)) {
@@ -2046,7 +2065,7 @@ void Device::updateFreeMemory(size_t size, bool free) {
   ClPrint(amd::LOG_INFO, amd::LOG_MEM, "device=0x%lx, freeMem_ = 0x%x", this, freeMem_.load());
 }
 
-bool Device::IpcCreate(void* dev_ptr, size_t* mem_size, void* handle) {
+bool Device::IpcCreate(void* dev_ptr, size_t* mem_size, void* handle, size_t* mem_offset) const {
   hsa_status_t hsa_status = HSA_STATUS_SUCCESS;
 
   amd::Memory* amd_mem_obj = amd::MemObjMap::FindMemObj(dev_ptr);
@@ -2055,7 +2074,7 @@ bool Device::IpcCreate(void* dev_ptr, size_t* mem_size, void* handle) {
     return false;
   }
 
-  // Get the starting pointer from the amd::Memory object
+  // Get the original pointer from the amd::Memory object
   void* orig_dev_ptr = nullptr;
   if (amd_mem_obj->getSvmPtr() != nullptr) {
     orig_dev_ptr = amd_mem_obj->getSvmPtr();
@@ -2065,15 +2084,27 @@ bool Device::IpcCreate(void* dev_ptr, size_t* mem_size, void* handle) {
     ShouldNotReachHere();
   }
 
-  if (orig_dev_ptr != dev_ptr) {
-    DevLogPrintfError("Handle can only be created for Original Dev Ptr: 0x%x", orig_dev_ptr);
+  // Check if the dev_ptr is lesser than original dev_ptr
+  if (orig_dev_ptr > dev_ptr) {
+    //If this happens, then revisit FindMemObj logic
+    DevLogPrintfError("Original dev_ptr: 0x%x cannot be greater than dev_ptr: 0x%x",
+                      orig_dev_ptr, dev_ptr);
     return false;
   }
 
+  //Calculate the memory offset from the original base ptr
+  *mem_offset = reinterpret_cast<address>(dev_ptr) - reinterpret_cast<address>(orig_dev_ptr);
   *mem_size = amd_mem_obj->getSize();
 
+  //Check if the dev_ptr is greater than memory allocated
+  if (*mem_offset > *mem_size) {
+    DevLogPrintfError("Memory offset: %u cannot be greater than size of "
+                      "original memory allocated: %u", *mem_size, *mem_offset);
+    return false;
+  }
+
   // Pass the pointer and memory size to retrieve the handle
-  hsa_status = hsa_amd_ipc_memory_create(dev_ptr, amd::alignUp(*mem_size, alloc_granularity()),
+  hsa_status = hsa_amd_ipc_memory_create(orig_dev_ptr, amd::alignUp(*mem_size, alloc_granularity()),
                                          reinterpret_cast<hsa_amd_ipc_memory_t*>(handle));
 
   if (hsa_status != HSA_STATUS_SUCCESS) {
@@ -2084,36 +2115,51 @@ bool Device::IpcCreate(void* dev_ptr, size_t* mem_size, void* handle) {
   return true;
 }
 
-bool Device::IpcAttach(const void* handle, size_t mem_size, unsigned int flags,
-                       void** dev_ptr) const {
+bool Device::IpcAttach(const void* handle, size_t mem_size, size_t mem_offset,
+                       unsigned int flags, void** dev_ptr) const {
   amd::Memory* amd_mem_obj = nullptr;
   hsa_status_t hsa_status = HSA_STATUS_SUCCESS;
+  void* orig_dev_ptr = nullptr;
 
   // Retrieve the devPtr from the handle
-  hsa_status
-    = hsa_amd_ipc_memory_attach(reinterpret_cast<const hsa_amd_ipc_memory_t*>(handle),
-                                mem_size, (1 + p2p_agents_.size()), p2p_agents_list_, dev_ptr);
+  hsa_status = hsa_amd_ipc_memory_attach(reinterpret_cast<const hsa_amd_ipc_memory_t*>(handle),
+                                         mem_size, (1 + p2p_agents_.size()), p2p_agents_list_,
+                                         &orig_dev_ptr);
 
   if (hsa_status != HSA_STATUS_SUCCESS) {
     LogPrintfError("HSA failed to attach IPC memory with status: %d \n", hsa_status);
     return false;
   }
 
-  // Create an amd Memory object for the pointer
-  amd_mem_obj = new (context()) amd::Buffer(context(), flags, mem_size, *dev_ptr);
+  amd_mem_obj = amd::MemObjMap::FindMemObj(orig_dev_ptr);
   if (amd_mem_obj == nullptr) {
-    LogError("failed to create a mem object!");
-    return false;
+
+    // Memory does not exist, create an amd Memory object for the pointer
+    amd_mem_obj = new (context()) amd::Buffer(context(), flags, mem_size, orig_dev_ptr);
+    if (amd_mem_obj == nullptr) {
+      LogError("failed to create a mem object!");
+      return false;
+    }
+
+    if (!amd_mem_obj->create(nullptr)) {
+      LogError("failed to create a svm hidden buffer!");
+      amd_mem_obj->release();
+      return false;
+    }
+
+    // Add the original mem_ptr to the MemObjMap with newly created amd_mem_obj
+    amd::MemObjMap::AddMemObj(orig_dev_ptr, amd_mem_obj);
+
+  } else {
+    //Memory already exists, just retain the old one.
+    amd_mem_obj->retain();
   }
 
-  if (!amd_mem_obj->create(nullptr)) {
-    LogError("failed to create a svm hidden buffer!");
-    amd_mem_obj->release();
-    return false;
-  }
+  //Make sure the mem_offset doesnt overflow the allocated memory
+  guarantee((mem_offset < mem_size) && "IPC mem offset greater than allocated size");
 
-  // Add the memory to the MemObjMap
-  amd::MemObjMap::AddMemObj(*dev_ptr, amd_mem_obj);
+  // Return offsetted device pointer and maintain offsetted_ptr to orig_dev_ptr in map
+  *dev_ptr = reinterpret_cast<address>(orig_dev_ptr) + mem_offset;
 
   return true;
 }
@@ -2127,19 +2173,31 @@ bool Device::IpcDetach (void* dev_ptr) const {
     return false;
   }
 
-  // Detach the memory from HSA
-  hsa_status = hsa_amd_ipc_memory_detach(dev_ptr);
-  if (hsa_status != HSA_STATUS_SUCCESS) {
-    LogPrintfError("HSA failed to detach memory with status: %d \n", hsa_status);
-    return false;
+  // Get the original pointer from the amd::Memory object
+  void* orig_dev_ptr = nullptr;
+  if (amd_mem_obj->getSvmPtr() != nullptr) {
+    orig_dev_ptr = amd_mem_obj->getSvmPtr();
+  } else if (amd_mem_obj->getHostMem() != nullptr) {
+    orig_dev_ptr = amd_mem_obj->getHostMem();
+  } else {
+    ShouldNotReachHere();
   }
 
-  amd::MemObjMap::RemoveMemObj(dev_ptr);
-  amd_mem_obj->release();
+  if (amd_mem_obj->release() == 0) {
+    amd::MemObjMap::RemoveMemObj(orig_dev_ptr);
+
+    // Detach the memory from HSA
+    hsa_status = hsa_amd_ipc_memory_detach(orig_dev_ptr);
+    if (hsa_status != HSA_STATUS_SUCCESS) {
+      LogPrintfError("HSA failed to detach memory with status: %d \n", hsa_status);
+      return false;
+    }
+  }
 
   return true;
 }
 
+// ================================================================================================
 void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_svm_mem_flags flags,
                        void* svmPtr) const {
   amd::Memory* mem = nullptr;
@@ -2182,7 +2240,10 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
                               amd::MemoryAdvice advice, bool first_alloc, bool use_cpu) const {
   if ((settings().hmmFlags_ & Settings::Hmm::EnableSvmTracking) && !first_alloc) {
     amd::Memory* svm_mem = amd::MemObjMap::FindMemObj(dev_ptr);
-    if (nullptr == svm_mem) {
+    if ((nullptr == svm_mem) || ((svm_mem->getMemFlags() & CL_MEM_ALLOC_HOST_PTR) == 0) ||
+        // Validate the range of provided memory
+        ((svm_mem->getSize() - (reinterpret_cast<const_address>(dev_ptr) -
+          reinterpret_cast<address>(svm_mem->getSvmPtr()))) < count)) {
       LogPrintfError("SetSvmAttributes received unknown memory for update: %p!", dev_ptr);
       return false;
     }
@@ -2259,12 +2320,16 @@ bool Device::GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
                               size_t num_attributes, const void* dev_ptr, size_t count) const {
   if (settings().hmmFlags_ & Settings::Hmm::EnableSvmTracking) {
     amd::Memory* svm_mem = amd::MemObjMap::FindMemObj(dev_ptr);
-    if (nullptr == svm_mem) {
+    if ((nullptr == svm_mem) || ((svm_mem->getMemFlags() & CL_MEM_ALLOC_HOST_PTR) == 0) ||
+        // Validate the range of provided memory
+        ((svm_mem->getSize() - (reinterpret_cast<const_address>(dev_ptr) -
+          reinterpret_cast<address>(svm_mem->getSvmPtr()))) < count)) {
       LogPrintfError("GetSvmAttributes received unknown memory %p for state!", dev_ptr);
       return false;
     }
   }
 #if AMD_HMM_SUPPORT
+  uint32_t accessed_by = 0;
   std::vector<hsa_amd_svm_attribute_pair_t> attr;
 
   for (size_t i = 0; i < num_attributes; ++i) {
@@ -2276,7 +2341,16 @@ bool Device::GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
         attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, 0});
         break;
       case amd::MemRangeAttribute::AccessedBy:
-        attr.push_back({HSA_AMD_SVM_ATTRIB_ACCESS_QUERY, 0});
+        accessed_by = attr.size();
+        // Add all GPU devices into the query
+        for (const auto agent : getGpuAgents()) {
+          attr.push_back({HSA_AMD_SVM_ATTRIB_ACCESS_QUERY, agent.handle});
+        }
+        // Add CPU devices
+        for (const auto agent_info : getCpuAgents()) {
+          attr.push_back({HSA_AMD_SVM_ATTRIB_ACCESS_QUERY, agent_info.agent.handle});
+        }
+        accessed_by = attr.size() - accessed_by;
         break;
       case amd::MemRangeAttribute::LastPrefetchLocation:
         attr.push_back({HSA_AMD_SVM_ATTRIB_PREFETCH_LOCATION, 0});
@@ -2295,9 +2369,11 @@ bool Device::GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
   }
 
   uint32_t idx = 0;
-  for (auto& it : attr) {
-    switch (it.attribute) {
-      case HSA_AMD_SVM_ATTRIB_READ_ONLY:
+  uint32_t rocr_attr = 0;
+  for (size_t i = 0; i < num_attributes; ++i) {
+    const auto& it = attr[rocr_attr];
+    switch (attributes[i]) {
+      case amd::MemRangeAttribute::ReadMostly:
         if (data_sizes[idx] != sizeof(uint32_t)) {
           return false;
         }
@@ -2306,8 +2382,8 @@ bool Device::GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
             (static_cast<uint32_t>(it.value) > 0) ? true : false;
         break;
       // The logic should be identical for the both queries
-      case HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION:
-      case HSA_AMD_SVM_ATTRIB_PREFETCH_LOCATION:
+      case amd::MemRangeAttribute::PreferredLocation:
+      case amd::MemRangeAttribute::LastPrefetchLocation:
         if (data_sizes[idx] != sizeof(uint32_t)) {
           return false;
         }
@@ -2325,13 +2401,50 @@ bool Device::GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
           }
         }
         break;
-      case HSA_AMD_SVM_ATTRIB_ACCESS_QUERY:
+      case amd::MemRangeAttribute::AccessedBy: {
+        uint32_t entry = 0;
+        uint32_t device_count = data_sizes[idx] / 4;
         // Make sure it's multiple of 4
         if (data_sizes[idx] % 4 != 0) {
           return false;
         }
-        // @note currently it's a nop
+        for (uint32_t att = 0; att < accessed_by; ++att) {
+          const auto& it = attr[rocr_attr + att];
+          if (entry >= device_count) {
+            // The size of the array is less than the amount of available devices
+            break;
+          }
+          switch (it.attribute) {
+            case HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE:
+            case HSA_AMD_SVM_ATTRIB_AGENT_NO_ACCESS:
+              break;
+            case HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE:
+              reinterpret_cast<int32_t*>(data[idx])[entry] = static_cast<int32_t>(amd::InvalidDeviceId);
+              // Find device agent returned by ROCr
+              for (auto& device : devices()) {
+                if (static_cast<Device*>(device)->getBackendDevice().handle == it.value) {
+                  reinterpret_cast<uint32_t*>(data[idx])[entry] = static_cast<uint32_t>(device->index());
+                }
+              }
+              // Find CPU agent returned by ROCr
+              for (auto& agent_info : getCpuAgents()) {
+                if (agent_info.agent.handle == it.value) {
+                  reinterpret_cast<int32_t*>(data[idx])[entry] = static_cast<int32_t>(amd::CpuDeviceId);
+                }
+              }
+              ++entry;
+              break;
+            default:
+              assert(!"Unexpected result from HSA_AMD_SVM_ATTRIB_ACCESS_QUERY");
+              break;
+          }
+        }
+        rocr_attr += accessed_by;
+        for (uint32_t idx = entry; idx < device_count; ++idx) {
+          reinterpret_cast<int32_t*>(data[idx])[idx] = static_cast<int32_t>(amd::InvalidDeviceId);
+        }
         break;
+      }
       default:
         return false;
       break;
@@ -2414,8 +2527,10 @@ bool Device::SetClockMode(const cl_set_device_clock_mode_input_amd setClockModeI
 static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
   if (status != HSA_STATUS_SUCCESS && status != HSA_STATUS_INFO_BREAK) {
     // Abort on device exceptions.
-    ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS, "Device::callbackQueue aborting with status: 0x%x",
-            status);
+    const char* errorMsg = 0;
+    hsa_status_string(status, &errorMsg);
+    ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS,
+            "Device::callbackQueue aborting with error : %s code: 0x%x", errorMsg, status);
     abort();
   }
 }
@@ -2667,7 +2782,7 @@ void* Device::getOrCreateHostcallBuffer(hsa_queue_t* queue, bool coop_queue,
   } else {
     coopHostcallBuffer_ = buffer;
   }
-  if (!enableHostcalls(buffer, numPackets)) {
+  if (!enableHostcalls(*this, buffer, numPackets)) {
     ClPrint(amd::LOG_ERROR, amd::LOG_QUEUE, "Failed to register hostcall buffer %p with listener",
             buffer);
     return nullptr;
@@ -2843,6 +2958,10 @@ void Device::getGlobalCUMask(std::string cuMaskStr) {
   } else {
     info_.globalCUMask_ = {};
   }
+}
+
+device::Signal* Device::createSignal() const {
+  return new roc::Signal();
 }
 
 } // namespace roc

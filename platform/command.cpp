@@ -45,7 +45,7 @@ namespace amd {
 Event::Event(HostQueue& queue)
     : callbacks_(NULL),
       status_(CL_INT_MAX),
-      profilingInfo_(queue.properties().test(CL_QUEUE_PROFILING_ENABLE) ||
+      profilingInfo_(IS_PROFILER_ON || queue.properties().test(CL_QUEUE_PROFILING_ENABLE) ||
                      Agent::shouldPostEventEvents()) {
   notified_.clear();
 }
@@ -105,13 +105,26 @@ bool Event::setStatus(int32_t status, uint64_t timeStamp) {
     }
   }
 
-  if (!status_.compare_exchange_strong(currentStatus, status, std::memory_order_relaxed)) {
-    // Somebody else beat us to it, let them deal with the release/signal.
-    return false;
-  }
-
-  if (callbacks_ != (CallBackEntry*)0) {
-    processCallbacks(status);
+  if (amd::IS_HIP) {
+    // HIP API doesn't have any event, associated with a callback. Hence the SW status of
+    // the event is irrelevant, during the actual callback. At the same time HIP API requires
+    // to finish the callback before HIP stream can continue. Hence runtime has to process
+    // the callback first and then update the status.
+    if (callbacks_ != (CallBackEntry*)0) {
+      processCallbacks(status);
+    }
+    if (!status_.compare_exchange_strong(currentStatus, status, std::memory_order_relaxed)) {
+      // Somebody else beat us to it, let them deal with the release/signal.
+      return false;
+    }
+  } else {
+    if (!status_.compare_exchange_strong(currentStatus, status, std::memory_order_relaxed)) {
+      // Somebody else beat us to it, let them deal with the release/signal.
+      return false;
+    }
+    if (callbacks_ != (CallBackEntry*)0) {
+      processCallbacks(status);
+    }
   }
 
   if (Agent::shouldPostEventEvents() && command().type() != 0) {
@@ -183,62 +196,58 @@ void Event::processCallbacks(int32_t status) const {
   }
 }
 
-void Event::waitForCompletion() {
-  ClPrint(LOG_DEBUG, LOG_WAIT, "waiting for event %p to complete, current status %d", this, status());
-  auto* queue = command().queue();
-  if ((queue != nullptr) && queue->vdev()->ActiveWait()) {
-    while (status() > CL_COMPLETE) {
-      amd::Os::yield();
-    }
-  } else {
-    ScopedLock lock(lock_);
-
-    // Wait until the status becomes CL_COMPLETE or negative.
-    while (status() > CL_COMPLETE) {
-      lock_.wait();
-    }
-  }
-  ClPrint(LOG_DEBUG, LOG_WAIT, "event %p wait completed", this);
-}
-
 bool Event::awaitCompletion() {
   if (status() > CL_COMPLETE) {
     // Notifies current command queue about waiting
-    Command* command = notifyCmdQueue(true);
-    if (command == nullptr) {
+    if (!notifyCmdQueue()) {
       return false;
-    } else {
-      command->waitForCompletion();
-      auto status = command->status();
-      command->release();
-      return status == CL_COMPLETE;
     }
+
+    ClPrint(LOG_DEBUG, LOG_WAIT, "waiting for event %p to complete, current status %d", this, status());
+    auto* queue = command().queue();
+    if ((queue != nullptr) && queue->vdev()->ActiveWait()) {
+      while (status() > CL_COMPLETE) {
+        amd::Os::yield();
+      }
+    } else {
+      ScopedLock lock(lock_);
+
+      // Wait until the status becomes CL_COMPLETE or negative.
+      while (status() > CL_COMPLETE) {
+        lock_.wait();
+      }
+    }
+    ClPrint(LOG_DEBUG, LOG_WAIT, "event %p wait completed", this);
   }
-  // Command is already completed
+
   return status() == CL_COMPLETE;
 }
 
-Command* Event::notifyCmdQueue(bool retain) {
+// ================================================================================================
+bool Event::notifyCmdQueue() {
   HostQueue* queue = command().queue();
-  if ((status() > CL_COMPLETE) && (NULL != queue) && !notified_.test_and_set()) {
+  if ((status() > CL_COMPLETE) && (nullptr != queue) &&
+      (!AMD_DIRECT_DISPATCH ||
+       // Don't need to notify any marker with direct dispatch,
+       // because all markers are blocking.
+       ((command().type() != CL_COMMAND_MARKER) &&
+        (command().type() != 0)) ||
+        // Don't need to notify if the current batch is empty,
+        // because that means the command was processed and extra notification
+        // will cause a stall on the host.
+        (queue->GetSubmittionBatch() != nullptr)) &&
+        !notified_.test_and_set()) {
     // Make sure the queue is draining the enqueued commands.
-    amd::Command* internalCommand = new amd::Marker(*queue, false, nullWaitList, this);
-    if (internalCommand == NULL) {
+    amd::Command* command = new amd::Marker(*queue, false, nullWaitList, this);
+    if (command == NULL) {
       notified_.clear();
-      return nullptr;
+      return false;
     }
     ClPrint(LOG_DEBUG, LOG_CMD, "queue marker to command queue: %p", queue);
-    internalCommand->enqueue();
-    // if retain is false, release the command here, else release in the caller function
-    if (!retain) {
-      internalCommand->release();
-    }
-    return internalCommand;
+    command->enqueue();
+    command->release();
   }
-  if (retain) {
-    this->retain();
-  }
-  return &command();
+  return true;
 }
 
 const Event::EventWaitList Event::nullWaitList(0);

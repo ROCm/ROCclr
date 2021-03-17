@@ -105,9 +105,6 @@ static constexpr PalDevice supportedPalDevices[] = {
   {10, 3,  0,  Pal::GfxIpLevel::GfxIp10_3, "gfx1030",       Pal::AsicRevision::Navi21},
   {10, 3,  1,  Pal::GfxIpLevel::GfxIp10_3, "gfx1031",       Pal::AsicRevision::Navi22},
   {10, 3,  2,  Pal::GfxIpLevel::GfxIp10_3, "gfx1032",       Pal::AsicRevision::Navi23},
-#if PAL_BUILD_VAN_GOGH
-  {10, 3,  3,  Pal::GfxIpLevel::GfxIp10_3, "",       Pal::AsicRevision::VanGogh},
-#endif
 };
 
 static std::tuple<const amd::Isa*, const char*> findIsa(Pal::AsicRevision asicRevision,
@@ -829,7 +826,11 @@ bool Device::create(Pal::IDevice* device) {
       (static_cast<uint>(properties().gpuMemoryProperties.flags.pageMigrationEnabled ||
                          properties().gpuMemoryProperties.flags.iommuv2Support));
 
-  bool isSRAMECCEnabled = properties().gfxipProperties.shaderCore.flags.eccProtectedGprs;
+  // Temporarily disable reporting sramecc support.
+  // PAL currently only reports if the device CAN support it,
+  // not if it is ENABLED. This will cause us to enable the feature on
+  // the HSAIL path, which is not supported.
+  bool isSRAMECCEnabled = false;
 
   const amd::Isa* isa;
   std::tie(isa, palName_) = findIsa(asicRevision_, isSRAMECCEnabled, isXNACKEnabled);
@@ -884,6 +885,13 @@ bool Device::create(Pal::IDevice* device) {
   // Make sure CP DMA can be used for all possible transfers
   palSettings->cpDmaCmdCopyMemoryMaxBytes = 0xFFFFFFFF;
 
+  // Create RGP capture manager
+  // Note: RGP initialization in PAL must be performed before CommitSettingsAndInit()
+  rgpCaptureMgr_ = RgpCaptureMgr::Create(platform_, *this);
+  if (nullptr != rgpCaptureMgr_) {
+    Pal::IPlatform::InstallDeveloperCb(iPlat(), &Device::PalDeveloperCallback, this);
+  }
+
   // Commit the new settings for the device
   result = iDev()->CommitSettingsAndInit();
   if (result != Pal::Result::Success) {
@@ -901,6 +909,9 @@ bool Device::create(Pal::IDevice* device) {
                            appProfile_.reportAsOCL12Device())) {
     return false;
   }
+
+  // Fill the device info structure
+  fillDeviceInfo(properties(), heaps_, 16 * Ki, numComputeEngines(), numExclusiveComputeEngines());
 
   if (!ValidateComgr()) {
     LogError("Code object manager initialization failed!");
@@ -933,9 +944,6 @@ bool Device::create(Pal::IDevice* device) {
   if (nullptr == resourceCache_) {
     return false;
   }
-
-  // Fill the device info structure
-  fillDeviceInfo(properties(), heaps_, 16 * Ki, numComputeEngines(), numExclusiveComputeEngines());
 
 #ifdef DEBUG
   std::stringstream message;
@@ -1120,10 +1128,12 @@ bool Device::initializeHeapResources() {
     }
     xferQueue_->enableSyncedBlit();
 
-    // Create RGP capture manager
-    rgpCaptureMgr_ = RgpCaptureMgr::Create(platform_, *this);
-    if (nullptr != rgpCaptureMgr_) {
-      Pal::IPlatform::InstallDeveloperCb(iPlat(), &Device::PalDeveloperCallback, this);
+    // Update RGP capture manager
+    if (rgpCaptureMgr_ != nullptr) {
+      if (!rgpCaptureMgr_->Update(platform_)) {
+        delete rgpCaptureMgr_;
+        rgpCaptureMgr_ = nullptr;
+      }
     }
   }
   return true;
