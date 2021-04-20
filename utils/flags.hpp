@@ -120,9 +120,6 @@ release(bool, GPU_USE_SINGLE_SCRATCH, false,                                  \
         "Use single scratch buffer per device instead of per HW ring")        \
 release(bool, AMD_OCL_WAIT_COMMAND, false,                                    \
         "1 = Enable a wait for every submitted command")                      \
-/* HSAIL is by default, except Linux 32bit, because of known Catalyst 32bit issue */  \
-release(bool, GPU_HSAIL_ENABLE, LP64_SWITCH(LINUX_SWITCH(false,true),true),   \
-        "Enable HSAIL on dGPU stack (requires CI+ HW)")                       \
 release(uint, GPU_PRINT_CHILD_KERNEL, 0,                                      \
         "Prints the specified number of the child kernels")                   \
 release(bool, GPU_USE_DEVICE_QUEUE, false,                                    \
@@ -260,7 +257,9 @@ release(cstring, ROC_GLOBAL_CU_MASK, "",                                      \
         "Sets a global CU mask (entered as hex value) for all queues,"        \
         "Each active bit represents using one CU (e.g., 0xf enables only 4 CUs)") \
 release(cstring, AMD_LOG_LEVEL_FILE, "",                                       \
-        "Set output file for AMD_LOG_LEVEL, Default is stderr")
+        "Set output file for AMD_LOG_LEVEL, Default is stderr")                \
+release(size_t, PAL_PREPINNED_MEMORY_SIZE, 64,                                 \
+        "Size in KBytes of prepinned memory")
 
 namespace amd {
 

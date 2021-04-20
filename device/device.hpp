@@ -34,7 +34,9 @@
 #include "devprogram.hpp"
 #include "devkernel.hpp"
 #include "amdocl/cl_profile_amd.h"
+#if defined(WITH_COMPILER_LIB)
 #include "acl.h"
+#endif
 #include "hwdebug.hpp"
 #include "devsignal.hpp"
 
@@ -906,7 +908,7 @@ class ClBinary : public amd::HeapObject {
   //! Destructor
   virtual ~ClBinary();
 
-  void init(amd::option::Options* optionsObj, bool amdilRequired = false);
+  void init(amd::option::Options* optionsObj);
 
   /** called only in loading image routines, never storing routines */
   bool setBinary(const char* theBinary, size_t theBinarySize, bool allocated = false,
@@ -986,7 +988,6 @@ class ClBinary : public amd::HeapObject {
 
   bool saveSOURCE() { return ((flags_ & BinarySourceMask) == BinarySaveSource); }
   bool saveLLVMIR() { return ((flags_ & BinaryLlvmirMask) == BinarySaveLlvmir); }
-  bool saveAMDIL() { return ((flags_ & BinaryAmdilMask) == BinarySaveAmdil); }
   bool saveISA() { return ((flags_ & BinaryIsaMask) == BinarySaveIsa); }
 
   bool saveAS() { return ((flags_ & BinaryASMask) == BinarySaveAS); }
@@ -1015,12 +1016,6 @@ class ClBinary : public amd::HeapObject {
     BinaryNoSaveLlvmir = 0x10,
     BinaryLlvmirMask = 0x18,
 
-    // AMDIL control
-    BinarySaveAmdil = 0x0,     // 0: default
-    BinaryRemoveAmdil = 0x20,  // for encrypted binary
-    BinaryNoSaveAmdil = 0x40,
-    BinaryAmdilMask = 0x60,
-
     // ISA control
     BinarySaveIsa = 0x0,     // 0: default
     BinaryRemoveIsa = 0x80,  // for encrypted binary
@@ -1037,9 +1032,11 @@ class ClBinary : public amd::HeapObject {
   //! Returns TRUE if binary file was allocated
   bool isBinaryAllocated() const { return (flags_ & BinaryAllocated) ? true : false; }
 
+#if defined(WITH_COMPILER_LIB)
   //! Returns BIF symbol name by symbolID,
   //! returns empty string if not found or if BIF version is unsupported
   std::string getBIFSymbol(unsigned int symbolID) const;
+#endif
 
  protected:
   const amd::Device& dev_;  //!< Device object
@@ -1209,9 +1206,6 @@ class VirtualDevice : public amd::HeapObject {
   //! Returns true if device has active wait setting
   bool ActiveWait() const;
 
-  bool isLastCommandSDMA() const { return isLastCommandSDMA_; }
-  void setLastCommandSDMA(bool s) { isLastCommandSDMA_ = s; }
-
  private:
   //! Disable default copy constructor
   VirtualDevice& operator=(const VirtualDevice&);
@@ -1225,8 +1219,6 @@ class VirtualDevice : public amd::HeapObject {
  protected:
   device::BlitManager* blitMgr_;  //!< Blit manager
 
-  //!< Keep track if the last command was SDMA and not send Barrier packets if barrier_sync is 0
-  std::atomic_bool isLastCommandSDMA_;
   amd::Monitor execution_;  //!< Lock to serialise access to all device objects
   uint index_;              //!< The virtual device unique index
 };
@@ -1296,11 +1288,6 @@ class Isa {
   /// @returns This Isa's name to use with the HSAIL compiler.
   const char *hsailName() const {
     return hsailId_;
-  }
-
-  /// @returns This Isa's name to use with the AMD IL compiler.
-  const char *amdIlName() const {
-    return amdIlId_;
   }
 
   /// @returns If the ROCm runtime supports the ISA.
@@ -1402,7 +1389,7 @@ class Isa {
 
  private:
 
-  constexpr Isa(const char* targetId, const char* hsailId, const char* amdIlId,
+  constexpr Isa(const char* targetId, const char* hsailId,
                 bool runtimeRocSupported, bool runtimePalSupported, bool runtimeGslSupported,
                 uint32_t versionMajor, uint32_t versionMinor, uint32_t versionStepping,
                 Feature sramecc, Feature xnack, uint32_t simdPerCU, uint32_t simdWidth,
@@ -1410,7 +1397,6 @@ class Isa {
                 uint32_t localMemSizePerCU, uint32_t localMemBanks)
       : targetId_(targetId),
         hsailId_(hsailId),
-        amdIlId_(amdIlId),
         runtimeRocSupported_(runtimeRocSupported),
         runtimePalSupported_(runtimePalSupported),
         runtimeGslSupported_(runtimeGslSupported),
@@ -1438,10 +1424,6 @@ class Isa {
   // unsupported.
   const char* hsailId_;
 
-  // @brief Isa's AMD IL name. Used for the Compiler Library for AMD IL
-  // compilation using the Shader Compiler. Empty string if unsupported.
-  const char* amdIlId_;
-
   bool runtimeRocSupported_;       //!< ROCm runtime is supported.
   bool runtimePalSupported_;       //!< PAL runtime is supported.
   bool runtimeGslSupported_;       //!< GSL runtime is supported.
@@ -1467,7 +1449,9 @@ class Isa {
  */
 class Device : public RuntimeObject {
  protected:
+#if defined(WITH_COMPILER_LIB)
   typedef aclCompiler Compiler;
+#endif
 
  public:
   // The structures below for MGPU launch match the device library format
@@ -1520,8 +1504,10 @@ class Device : public RuntimeObject {
     );
   };
 
+#if defined(WITH_COMPILER_LIB)
   virtual Compiler* compiler() const = 0;
   virtual Compiler* binCompiler() const { return compiler(); }
+#endif
 
   Device();
   virtual ~Device();

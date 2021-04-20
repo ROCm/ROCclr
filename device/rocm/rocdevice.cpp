@@ -94,7 +94,6 @@ extern const char* BlitSourceCode;
 } // namespace device
 
 namespace roc {
-amd::Device::Compiler* NullDevice::compilerHandle_;
 bool roc::Device::isHsaInitialized_ = false;
 std::vector<hsa_agent_t> roc::Device::gpu_agents_;
 std::vector<AgentInfo> roc::Device::cpu_agents_;
@@ -264,35 +263,10 @@ Device::~Device() {
 }
 
 bool NullDevice::initCompiler(bool isOffline) {
-#if defined(WITH_COMPILER_LIB)
-  // Initialize the compiler handle if has already not been initialized
-  // This is destroyed in Device::teardown
-  acl_error error;
-  if (!compilerHandle_) {
-    aclCompilerOptions opts = {
-      sizeof(aclCompilerOptions_0_8), "libamdoclcl64.so",
-      NULL, NULL, NULL, NULL, NULL, NULL
-    };
-    compilerHandle_ = aclCompilerInit(&opts, &error);
-    if (!GPU_ENABLE_LC && error != ACL_SUCCESS) {
-      LogError("Error initializing the compiler handle");
-      return false;
-    }
-  }
-#endif // defined(WITH_COMPILER_LIB)
   return true;
 }
 
 bool NullDevice::destroyCompiler() {
-#if defined(WITH_COMPILER_LIB)
-  if (compilerHandle_ != nullptr) {
-    acl_error error = aclCompilerFini(compilerHandle_);
-    if (error != ACL_SUCCESS) {
-      LogError("Error closing the compiler");
-      return false;
-    }
-  }
-#endif // defined(WITH_COMPILER_LIB)
   return true;
 }
 
@@ -1606,11 +1580,6 @@ device::VirtualDevice* Device::createVirtualDevice(amd::CommandQueue* queue) {
     cooperative = amd::IS_HIP && settings().enableCoopGroups_;
     profiling = amd::IS_HIP;
   }
-  // If barrier is disabled, then profiling should be enabled to make sure HSA signal is
-  // attached for every dispatch
-  else if (!settings().barrier_sync_) {
-    queue->properties().set(CL_QUEUE_PROFILING_ENABLE);
-  }
   // Initialization of heap and other resources occur during the command
   // queue creation time.
   const std::vector<uint32_t> defaultCuMask = {};
@@ -1872,7 +1841,7 @@ void* Device::hostAlloc(size_t size, size_t alignment, MemorySegment mem_seg) co
     }
     case kNoAtomics :
       // If runtime disables barrier, then all host allocations must have L2 disabled
-      if ((settings().barrier_sync_) && (system_coarse_segment_.handle != 0)) {
+      if (system_coarse_segment_.handle != 0) {
         segment = system_coarse_segment_;
         break;
       }
@@ -1889,13 +1858,13 @@ void* Device::hostAlloc(size_t size, size_t alignment, MemorySegment mem_seg) co
   hsa_status_t stat = hsa_amd_memory_pool_allocate(segment, size, 0, &ptr);
   ClPrint(amd::LOG_DEBUG, amd::LOG_MEM, "Allocate hsa host memory %p, size 0x%zx", ptr, size);
   if (stat != HSA_STATUS_SUCCESS) {
-    LogError("Fail allocation host memory");
+    LogPrintfError("Fail allocation host memory with err %d", stat);
     return nullptr;
   }
 
   stat = hsa_amd_agents_allow_access(gpu_agents_.size(), &gpu_agents_[0], nullptr, ptr);
   if (stat != HSA_STATUS_SUCCESS) {
-    LogError("Fail hsa_amd_agents_allow_access");
+    LogPrintfError("Fail hsa_amd_agents_alloc_access with err %d", stat);
     hostFree(ptr, size);
     return nullptr;
   }
@@ -1908,10 +1877,9 @@ void* Device::hostAgentAlloc(size_t size, const AgentInfo& agentInfo, bool atomi
   void* ptr = nullptr;
   const hsa_amd_memory_pool_t segment =
       // If runtime disables barrier, then all host allocations must have L2 disabled
-      (!atomics && settings().barrier_sync_) ?
-          (agentInfo.coarse_grain_pool.handle != 0) ?
+      !atomics ? (agentInfo.coarse_grain_pool.handle != 0) ?
               agentInfo.coarse_grain_pool : agentInfo.fine_grain_pool
-          : agentInfo.fine_grain_pool;
+               : agentInfo.fine_grain_pool;
   assert(segment.handle != 0);
   hsa_status_t stat = hsa_amd_memory_pool_allocate(segment, size, 0, &ptr);
   ClPrint(amd::LOG_DEBUG, amd::LOG_MEM, "Allocate hsa host memory %p, size 0x%zx", ptr, size);
@@ -2218,8 +2186,10 @@ void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_
     // if the device supports SVM FGS, return the committed CPU address directly.
     Memory* gpuMem = getRocMemory(mem);
 
-    // add the information to context so that we can use it later.
-    amd::MemObjMap::AddMemObj(mem->getSvmPtr(), mem);
+    if (mem->getSvmPtr() != nullptr) {
+      // add the information to context so that we can use it later.
+      amd::MemObjMap::AddMemObj(mem->getSvmPtr(), mem);
+    }
     svmPtr = mem->getSvmPtr();
   } else {
     // Find the existing amd::mem object

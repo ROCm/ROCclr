@@ -1216,7 +1216,7 @@ void VirtualGPU::submitReadMemory(amd::ReadMemoryCommand& vcmd) {
         if (size[0] <= dev().settings().pinnedMinXferSize_) {
           partial = size[0];
         }
-        // Make first step transfer 
+        // Make first step transfer
         if (partial > 0) {
           result = blitMgr().readBuffer(*memory, vcmd.destination(), origin, partial);
         }
@@ -1327,7 +1327,7 @@ void VirtualGPU::submitWriteMemory(amd::WriteMemoryCommand& vcmd) {
         origin.c[0] *= elemSize;
         size.c[0] *= elemSize;
       }
-      if (hostMemory != nullptr) {
+      if ((hostMemory != nullptr) && (vcmd.size()[0] > dev().settings().prepinnedMinSize_)){
         // Accelerated transfer without pinning
         amd::Coord3D srcOrigin(offset);
         result = blitMgr().copyBuffer(*hostMemory, *memory, srcOrigin, origin, size,
@@ -1721,6 +1721,8 @@ void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& vcmd) {
     // data check was added for persistent memory that failed to get aperture
     // and therefore are treated like a remote resource
     else if (memory->isPersistentDirectMap() && (memory->data() != nullptr)) {
+      // Map/unmap must be serialized
+      amd::ScopedLock lock(owner->lockMemoryOps());
       memory->unmap(this);
     } else if (memory->mapMemory() != nullptr) {
       if (writeMapInfo->isUnmapWrite()) {
@@ -2593,6 +2595,9 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes, const 
   if (rgpCaptureEna()) {
     dev().rgpCaptureMgr()->PostDispatch(this);
   }
+
+  // Mark the flag indicating if a dispatch is outstanding.
+  state_.hasPendingDispatch_ = true;
 
   return true;
 }
@@ -3831,4 +3836,13 @@ void* VirtualGPU::getOrCreateHostcallBuffer() {
   }
   return hostcallBuffer_;
 }
+
+void VirtualGPU::releaseGpuMemoryFence() {
+  if (isPendingDispatch() && amd::IS_HIP) {
+    WaitForIdleCompute();
+    // Reset the status.
+    state_.hasPendingDispatch_ = false;
+  }
+}
+
 }  // namespace pal
