@@ -121,7 +121,7 @@ if((CMAKE_CXX_COMPILER_ID STREQUAL "GNU") OR
     -Wno-unused-variable)
 endif()
 
-add_definitions(-D__x86_64__ -DOPENCL_MAJOR=2 -DOPENCL_MINOR=1 -DCL_TARGET_OPENCL_VERSION=220 -DATI_OS_LINUX -DATI_ARCH_X86 -DLITTLEENDIAN_CPU -DATI_BITS_64 -DWITH_TARGET_AMDGCN -DOPENCL_EXPORTS -DCL_USE_DEPRECATED_OPENCL_1_0_APIS -DCL_USE_DEPRECATED_OPENCL_1_1_APIS -DCL_USE_DEPRECATED_OPENCL_1_2_APIS -DCL_USE_DEPRECATED_OPENCL_2_0_APIS -DVEGA10_ONLY=false -DWITH_LIGHTNING_COMPILER)
+add_definitions(-D__x86_64__ -DOPENCL_MAJOR=2 -DOPENCL_MINOR=1 -DCL_TARGET_OPENCL_VERSION=220 -DATI_OS_LINUX -DATI_ARCH_X86 -DLITTLEENDIAN_CPU -DATI_BITS_64 -DWITH_TARGET_AMDGCN -DOPENCL_EXPORTS -DCL_USE_DEPRECATED_OPENCL_1_0_APIS -DCL_USE_DEPRECATED_OPENCL_1_1_APIS -DCL_USE_DEPRECATED_OPENCL_1_2_APIS -DCL_USE_DEPRECATED_OPENCL_2_0_APIS -DWITH_LIGHTNING_COMPILER)
 add_definitions(-DOPENCL_C_MAJOR=2 -DOPENCL_C_MINOR=0)
 
 set(CMAKE_SHARED_LINKER_FLAGS "-Wl,-Bsymbolic -Wl,--unresolved-symbols=report-all")
@@ -151,8 +151,6 @@ else ()
   add_subdirectory(device/rocm)
 endif()
 
-set(COMGR_CPP device/comgrctx.cpp)
-
 set(oclruntime_src
   thread/thread.cpp
   thread/monitor.cpp
@@ -170,6 +168,8 @@ set(oclruntime_src
   device/devhcprintf.cpp
   device/devhcmessages.cpp
   device/devhostcall.cpp
+  device/comgrctx.cpp
+  device/hsailctx.cpp
   platform/activity.cpp
   platform/kernel.cpp
   platform/context.cpp
@@ -186,11 +186,9 @@ set(oclruntime_src
   os/os_posix.cpp
   compiler/lib/utils/options.cpp
   elf/elf.cpp
-  #${CMAKE_CURRENT_SOURCE_DIR}/compiler/tools/caching/cache.cpp
 )
 
-add_library(amdrocclr_static STATIC
-  ${oclruntime_src} ${COMGR_CPP})
+add_library(amdrocclr_static STATIC ${oclruntime_src})
 
 set_target_properties(amdrocclr_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -199,6 +197,7 @@ target_include_directories(amdrocclr_static
     $<INSTALL_INTERFACE:include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/device>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/device/rocm>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/compiler/lib/include>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/compiler/lib>
