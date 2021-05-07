@@ -186,6 +186,9 @@ class Event : public RuntimeObject {
    */
   bool setStatus(int32_t status, uint64_t timeStamp = 0);
 
+  //! Reset the status of the command for reuse
+  bool resetStatus(int32_t status);
+
   //! Signal all threads waiting on this event.
   void signal() {
     ScopedLock lock(lock_);
@@ -268,6 +271,13 @@ class Command : public Event {
 
   //! Return the list of events this command needs to wait on before dispatch
   const EventWaitList& eventWaitList() const { return eventWaitList_; }
+
+  //! Update with the list of events this command needs to wait on before dispatch
+  void updateEventWaitList(const EventWaitList& waitList) {
+    for (auto event : waitList) {
+      eventWaitList_.push_back(event);
+    }
+  }
 
   //! Return this command's OpenCL type.
   cl_command_type type() const { return type_; }
@@ -945,6 +955,31 @@ class NativeFnCommand : public Command {
 
   int32_t invoke();
 };
+
+
+class ExternalSemaphoreCmd : public Command {
+ public:
+  enum ExternalSemaphoreCmdType { COMMAND_WAIT_EXTSEMAPHORE, COMMAND_SIGNAL_EXTSEMAPHORE };
+
+ private:
+  const void* sem_ptr_; //!< Pointer to external semaphore
+  int fence_;           //!< semaphore value to be set
+  ExternalSemaphoreCmdType cmd_type_; //!< Signal or Wait semaphore command
+
+ public:
+  ExternalSemaphoreCmd(HostQueue& queue, const void* sem_ptr, int fence,
+                       ExternalSemaphoreCmdType cmd_type)
+      : Command::Command(queue, CL_COMMAND_USER), sem_ptr_(sem_ptr), fence_(fence), cmd_type_(cmd_type) {}
+
+  virtual void submit(device::VirtualDevice& device) {
+    device.submitExternalSemaphoreCmd(*this);
+  }
+  const void* sem_ptr() const { return sem_ptr_; }
+  const int fence() { return fence_; }
+  const ExternalSemaphoreCmdType semaphoreCmd() { return cmd_type_; }
+
+};
+
 
 class Marker : public Command {
  public:
