@@ -1196,6 +1196,8 @@ class VirtualDevice : public amd::HeapObject {
     ShouldNotReachHere();
   }
   virtual void submitStreamOperation(amd::StreamOperationCommand& cmd) { ShouldNotReachHere(); }
+
+  virtual void profilerAttach(bool enable) = 0;
   //! Get the blit manager object
   device::BlitManager& blitMgr() const { return *blitMgr_; }
 
