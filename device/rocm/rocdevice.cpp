@@ -1516,9 +1516,9 @@ bool Device::populateOCLDeviceConstants() {
     info_.cooperativeGroups_ = settings().enableCoopGroups_;
     info_.cooperativeMultiDeviceGroups_ = settings().enableCoopMultiDeviceGroups_;
 
-    // TODO: Update this to use HSA API when it is ready. For now limiting this to gfx908
+    // TODO: Update this to use HSA API when it is ready. For now limiting this to gfx908 and gfx90a
     info_.aqlBarrierValue_ =
-        (isa().versionMajor() == 9 && isa().versionMinor() == 0 && isa().versionStepping() == 8);
+        (isa().versionMajor() == 9 && isa().versionMinor() == 0 && (isa().versionStepping() == 8 || isa().versionStepping() == 10));
   }
 
   info_.maxPipePacketSize_ = info_.maxMemAllocSize_;
