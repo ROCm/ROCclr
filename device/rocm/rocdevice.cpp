@@ -277,10 +277,6 @@ bool NullDevice::init() {
     return false;
   }
 
-  // FIXME: ROC offline device support needs to be corrected.
-  // For now return without initializing offline device list.
-  return true;
-
   // Create offline devices for all ISAs not already associated with an online
   // device. This allows code objects to be compiled for all supported ISAs.
   std::vector<Device*> devices = getDevices(CL_DEVICE_TYPE_GPU, false);
@@ -792,6 +788,16 @@ bool Device::create() {
   // Create signal for HMM prefetch operation on device
   if (HSA_STATUS_SUCCESS != hsa_signal_create(kInitSignalValueOne, 0, nullptr, &prefetch_signal_)) {
     return false;
+  }
+
+  // only create arena_mem_object if CPU memory is accessible.
+  if (info_.hmmCpuMemoryAccessible_) {
+    arena_mem_obj_ = new (context()) amd::ArenaMemory(context());
+    if (!arena_mem_obj_->create(nullptr)) {
+      LogError("Arena Memory Creation failed!");
+      arena_mem_obj_->release();
+      arena_mem_obj_ = nullptr;
+    }
   }
 
   return true;
@@ -1516,9 +1522,8 @@ bool Device::populateOCLDeviceConstants() {
     info_.cooperativeGroups_ = settings().enableCoopGroups_;
     info_.cooperativeMultiDeviceGroups_ = settings().enableCoopMultiDeviceGroups_;
 
-    // TODO: Update this to use HSA API when it is ready. For now limiting this to gfx908
-    info_.aqlBarrierValue_ =
-        (isa().versionMajor() == 9 && isa().versionMinor() == 0 && isa().versionStepping() == 8);
+    // TODO: Update this to use HSA API when it is ready. For now limiting this to gfx9
+    info_.aqlBarrierValue_ = (isa().versionMajor() == 9 && isa().versionMinor() == 0);
   }
 
   info_.maxPipePacketSize_ = info_.maxMemAllocSize_;
@@ -1548,7 +1553,6 @@ bool Device::populateOCLDeviceConstants() {
         : 0;
   }
 
-#if AMD_HMM_SUPPORT
   // Generic support for HMM interfaces
   if (HSA_STATUS_SUCCESS != hsa_system_get_info(HSA_AMD_SYSTEM_INFO_SVM_SUPPORTED,
       &info_.hmmSupported_)) {
@@ -1560,7 +1564,8 @@ bool Device::populateOCLDeviceConstants() {
       &info_.hmmCpuMemoryAccessible_)) {
     LogError("HSA_AMD_SYSTEM_INFO_SVM_ACCESSIBLE_BY_DEFAULT query failed.");
   }
-#endif  // AMD_HMM_SUPPORT
+  LogPrintfInfo("HMM support: %d, xnack: %d\n",
+    info_.hmmSupported_, info_.hmmCpuMemoryAccessible_);
 
   info_.globalCUMask_ = {};
 
@@ -2171,7 +2176,8 @@ void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_
 
   if (nullptr == svmPtr) {
     // create a hidden buffer, which will allocated on the device later
-    mem = new (context) amd::Buffer(context, flags, size, reinterpret_cast<void*>(1));
+    mem = new (context) amd::Buffer(context, flags, size,
+                reinterpret_cast<void*>(amd::Memory::MemoryType::kSvmMemoryPtr));
     if (mem == nullptr) {
       LogError("failed to create a svm mem object!");
       return nullptr;
@@ -2217,63 +2223,67 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
       return false;
     }
   }
-#if AMD_HMM_SUPPORT
-  std::vector<hsa_amd_svm_attribute_pair_t> attr;
-  if (first_alloc) {
-    attr.push_back({HSA_AMD_SVM_ATTRIB_GLOBAL_FLAG, HSA_AMD_SVM_GLOBAL_FLAG_COARSE_GRAINED});
-  }
+  if (info().hmmSupported_) {
+    std::vector<hsa_amd_svm_attribute_pair_t> attr;
+    if (first_alloc) {
+      attr.push_back({HSA_AMD_SVM_ATTRIB_GLOBAL_FLAG, HSA_AMD_SVM_GLOBAL_FLAG_COARSE_GRAINED});
+    }
 
-  switch (advice) {
-    case amd::MemoryAdvice::SetReadMostly:
-      attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, true});
-      break;
-    case amd::MemoryAdvice::UnsetReadMostly:
-      attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, false});
-      break;
-    case amd::MemoryAdvice::SetPreferredLocation:
-      if (use_cpu) {
-        attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, getCpuAgent().handle});
-      } else {
-        attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, getBackendDevice().handle});
-      }
-      break;
-    case amd::MemoryAdvice::UnsetPreferredLocation:
-      // @note: 0 may cause a failure on old runtimes
-      attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, 0});
-      break;
-    case amd::MemoryAdvice::SetAccessedBy:
-      if (use_cpu) {
-        attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE, getCpuAgent().handle});
-      } else {
-        if (first_alloc) {
-          // Provide access to all possible devices.
-          //! @note: HMM should support automatic page table update with xnack enabled,
-          //! but currently it doesn't and runtime explicitly enables access from all devices
-          for (const auto dev : devices()) {
-            attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE,
-                static_cast<Device*>(dev)->getBackendDevice().handle});
-          }
+    switch (advice) {
+      case amd::MemoryAdvice::SetReadMostly:
+        attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, true});
+        break;
+      case amd::MemoryAdvice::UnsetReadMostly:
+        attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, false});
+        break;
+      case amd::MemoryAdvice::SetPreferredLocation:
+        if (use_cpu) {
+          attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, getCpuAgent().handle});
         } else {
-          attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE, getBackendDevice().handle});
+          attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, getBackendDevice().handle});
         }
+        break;
+      case amd::MemoryAdvice::UnsetPreferredLocation:
+        // @note: 0 may cause a failure on old runtimes
+        attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, 0});
+        break;
+      case amd::MemoryAdvice::SetAccessedBy: {
+        const uint64_t attrib = (first_alloc) ? HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE :
+                                                HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE;
+        if (use_cpu) {
+          attr.push_back({attrib, getCpuAgent().handle});
+        } else {
+          if (first_alloc) {
+            // Provide access to all possible devices.
+            //! @note: HMM should support automatic page table update with xnack enabled,
+            //! but currently it doesn't and runtime explicitly enables access from all devices
+            for (const auto dev : devices()) {
+              attr.push_back({attrib, static_cast<Device*>(dev)->getBackendDevice().handle});
+            }
+          } else {
+            attr.push_back({attrib, getBackendDevice().handle});
+          }
+        }
+        break;
       }
+      case amd::MemoryAdvice::UnsetAccessedBy:
+        // @note: 0 may cause a failure on old runtimes
+        attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE, 0});
+        break;
+      default:
+        return false;
       break;
-    case amd::MemoryAdvice::UnsetAccessedBy:
-      // @note: 0 may cause a failure on old runtimes
-      attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE, 0});
-      break;
-    default:
-      return false;
-    break;
-  }
+    }
 
-  hsa_status_t status = hsa_amd_svm_attributes_set(const_cast<void*>(dev_ptr), count,
-                                                   attr.data(), attr.size());
-  if (status != HSA_STATUS_SUCCESS) {
-    LogPrintfError("hsa_amd_svm_attributes_set() failed. Advice: %d", advice);
-    return false;
+    hsa_status_t status = hsa_amd_svm_attributes_set(const_cast<void*>(dev_ptr), count,
+                                                    attr.data(), attr.size());
+    if (status != HSA_STATUS_SUCCESS) {
+      LogPrintfError("hsa_amd_svm_attributes_set() failed. Advice: %d", advice);
+      return false;
+    }
+  } else {
+    LogWarning("hsa_amd_svm_attributes_set() is ignored, because no HMM support");
   }
-#endif // AMD_HMM_SUPPORT
   return true;
 }
 
@@ -2297,131 +2307,139 @@ bool Device::GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
       return false;
     }
   }
-#if AMD_HMM_SUPPORT
-  uint32_t accessed_by = 0;
-  std::vector<hsa_amd_svm_attribute_pair_t> attr;
+  if (info().hmmSupported_) {
+    uint32_t accessed_by = 0;
+    std::vector<hsa_amd_svm_attribute_pair_t> attr;
 
-  for (size_t i = 0; i < num_attributes; ++i) {
-    switch (attributes[i]) {
-      case amd::MemRangeAttribute::ReadMostly:
-        attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, 0});
+    for (size_t i = 0; i < num_attributes; ++i) {
+      switch (attributes[i]) {
+        case amd::MemRangeAttribute::ReadMostly:
+          attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, 0});
+          break;
+        case amd::MemRangeAttribute::PreferredLocation:
+          attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, 0});
+          break;
+        case amd::MemRangeAttribute::AccessedBy:
+          accessed_by = attr.size();
+          // Add all GPU devices into the query
+          for (const auto agent : getGpuAgents()) {
+            attr.push_back({HSA_AMD_SVM_ATTRIB_ACCESS_QUERY, agent.handle});
+          }
+          // Add CPU devices
+          for (const auto agent_info : getCpuAgents()) {
+            attr.push_back({HSA_AMD_SVM_ATTRIB_ACCESS_QUERY, agent_info.agent.handle});
+          }
+          accessed_by = attr.size() - accessed_by;
+          break;
+        case amd::MemRangeAttribute::LastPrefetchLocation:
+          attr.push_back({HSA_AMD_SVM_ATTRIB_PREFETCH_LOCATION, 0});
+          break;
+        default:
+          return false;
         break;
-      case amd::MemRangeAttribute::PreferredLocation:
-        attr.push_back({HSA_AMD_SVM_ATTRIB_PREFERRED_LOCATION, 0});
-        break;
-      case amd::MemRangeAttribute::AccessedBy:
-        accessed_by = attr.size();
-        // Add all GPU devices into the query
-        for (const auto agent : getGpuAgents()) {
-          attr.push_back({HSA_AMD_SVM_ATTRIB_ACCESS_QUERY, agent.handle});
-        }
-        // Add CPU devices
-        for (const auto agent_info : getCpuAgents()) {
-          attr.push_back({HSA_AMD_SVM_ATTRIB_ACCESS_QUERY, agent_info.agent.handle});
-        }
-        accessed_by = attr.size() - accessed_by;
-        break;
-      case amd::MemRangeAttribute::LastPrefetchLocation:
-        attr.push_back({HSA_AMD_SVM_ATTRIB_PREFETCH_LOCATION, 0});
-        break;
-      default:
-        return false;
-      break;
+      }
     }
-  }
 
-  hsa_status_t status = hsa_amd_svm_attributes_get(const_cast<void*>(dev_ptr), count,
-                                                   attr.data(), attr.size());
-  if (status != HSA_STATUS_SUCCESS) {
-    LogError("hsa_amd_svm_attributes_get() failed");
+    hsa_status_t status = hsa_amd_svm_attributes_get(const_cast<void*>(dev_ptr), count,
+                                                    attr.data(), attr.size());
+    if (status != HSA_STATUS_SUCCESS) {
+      LogError("hsa_amd_svm_attributes_get() failed");
+      return false;
+    }
+
+    uint32_t idx = 0;
+    uint32_t rocr_attr = 0;
+    for (size_t i = 0; i < num_attributes; ++i) {
+      const auto& it = attr[rocr_attr];
+      switch (attributes[i]) {
+        case amd::MemRangeAttribute::ReadMostly:
+          if (data_sizes[idx] != sizeof(uint32_t)) {
+            return false;
+          }
+          // Cast ROCr value into the hip format
+          *reinterpret_cast<uint32_t*>(data[idx]) =
+              (static_cast<uint32_t>(it.value) > 0) ? true : false;
+          break;
+        // The logic should be identical for the both queries
+        case amd::MemRangeAttribute::PreferredLocation:
+        case amd::MemRangeAttribute::LastPrefetchLocation:
+          if (data_sizes[idx] != sizeof(uint32_t)) {
+            return false;
+          }
+          *reinterpret_cast<int32_t*>(data[idx]) = static_cast<int32_t>(amd::InvalidDeviceId);
+          // Find device agent returned by ROCr
+          for (auto& device : devices()) {
+            if (static_cast<Device*>(device)->getBackendDevice().handle == it.value) {
+              *reinterpret_cast<uint32_t*>(data[idx]) = static_cast<uint32_t>(device->index());
+            }
+          }
+          // Find CPU agent returned by ROCr
+          for (auto& agent_info : getCpuAgents()) {
+            if (agent_info.agent.handle == it.value) {
+              *reinterpret_cast<int32_t*>(data[idx]) = static_cast<int32_t>(amd::CpuDeviceId);
+            }
+          }
+          break;
+        case amd::MemRangeAttribute::AccessedBy: {
+          uint32_t entry = 0;
+          uint32_t device_count = data_sizes[idx] / 4;
+          // Make sure it's multiple of 4
+          if (data_sizes[idx] % 4 != 0) {
+            return false;
+          }
+          for (uint32_t att = 0; att < accessed_by; ++att) {
+            const auto& it = attr[rocr_attr + att];
+            if (entry >= device_count) {
+              // The size of the array is less than the amount of available devices
+              break;
+            }
+            switch (it.attribute) {
+              case HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE:
+              case HSA_AMD_SVM_ATTRIB_AGENT_NO_ACCESS:
+                break;
+              case HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE:
+                reinterpret_cast<int32_t*>(data[idx])[entry] =
+                  static_cast<int32_t>(amd::InvalidDeviceId);
+                // Find device agent returned by ROCr
+                for (auto& device : devices()) {
+                  if (static_cast<Device*>(device)->getBackendDevice().handle == it.value) {
+                    reinterpret_cast<uint32_t*>(data[idx])[entry] =
+                      static_cast<uint32_t>(device->index());
+                  }
+                }
+                // Find CPU agent returned by ROCr
+                for (auto& agent_info : getCpuAgents()) {
+                  if (agent_info.agent.handle == it.value) {
+                    reinterpret_cast<int32_t*>(data[idx])[entry] =
+                      static_cast<int32_t>(amd::CpuDeviceId);
+                  }
+                }
+                ++entry;
+                break;
+              default:
+                LogWarning("Unexpected result from HSA_AMD_SVM_ATTRIB_ACCESS_QUERY");
+                break;
+            }
+          }
+          rocr_attr += accessed_by;
+          for (uint32_t idx = entry; idx < device_count; ++idx) {
+            reinterpret_cast<int32_t*>(data[idx])[idx] =
+              static_cast<int32_t>(amd::InvalidDeviceId);
+          }
+          break;
+        }
+        default:
+          return false;
+        break;
+      }
+      // Find the next location in the query
+      ++idx;
+    }
+  } else {
+    LogError("GetSvmAttributes() failed, because no HMM support");
     return false;
   }
 
-  uint32_t idx = 0;
-  uint32_t rocr_attr = 0;
-  for (size_t i = 0; i < num_attributes; ++i) {
-    const auto& it = attr[rocr_attr];
-    switch (attributes[i]) {
-      case amd::MemRangeAttribute::ReadMostly:
-        if (data_sizes[idx] != sizeof(uint32_t)) {
-          return false;
-        }
-        // Cast ROCr value into the hip format
-        *reinterpret_cast<uint32_t*>(data[idx]) =
-            (static_cast<uint32_t>(it.value) > 0) ? true : false;
-        break;
-      // The logic should be identical for the both queries
-      case amd::MemRangeAttribute::PreferredLocation:
-      case amd::MemRangeAttribute::LastPrefetchLocation:
-        if (data_sizes[idx] != sizeof(uint32_t)) {
-          return false;
-        }
-        *reinterpret_cast<int32_t*>(data[idx]) = static_cast<int32_t>(amd::InvalidDeviceId);
-        // Find device agent returned by ROCr
-        for (auto& device : devices()) {
-          if (static_cast<Device*>(device)->getBackendDevice().handle == it.value) {
-            *reinterpret_cast<uint32_t*>(data[idx]) = static_cast<uint32_t>(device->index());
-          }
-        }
-        // Find CPU agent returned by ROCr
-        for (auto& agent_info : getCpuAgents()) {
-          if (agent_info.agent.handle == it.value) {
-            *reinterpret_cast<int32_t*>(data[idx]) = static_cast<int32_t>(amd::CpuDeviceId);
-          }
-        }
-        break;
-      case amd::MemRangeAttribute::AccessedBy: {
-        uint32_t entry = 0;
-        uint32_t device_count = data_sizes[idx] / 4;
-        // Make sure it's multiple of 4
-        if (data_sizes[idx] % 4 != 0) {
-          return false;
-        }
-        for (uint32_t att = 0; att < accessed_by; ++att) {
-          const auto& it = attr[rocr_attr + att];
-          if (entry >= device_count) {
-            // The size of the array is less than the amount of available devices
-            break;
-          }
-          switch (it.attribute) {
-            case HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE:
-            case HSA_AMD_SVM_ATTRIB_AGENT_NO_ACCESS:
-              break;
-            case HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE:
-              reinterpret_cast<int32_t*>(data[idx])[entry] = static_cast<int32_t>(amd::InvalidDeviceId);
-              // Find device agent returned by ROCr
-              for (auto& device : devices()) {
-                if (static_cast<Device*>(device)->getBackendDevice().handle == it.value) {
-                  reinterpret_cast<uint32_t*>(data[idx])[entry] = static_cast<uint32_t>(device->index());
-                }
-              }
-              // Find CPU agent returned by ROCr
-              for (auto& agent_info : getCpuAgents()) {
-                if (agent_info.agent.handle == it.value) {
-                  reinterpret_cast<int32_t*>(data[idx])[entry] = static_cast<int32_t>(amd::CpuDeviceId);
-                }
-              }
-              ++entry;
-              break;
-            default:
-              LogWarning("Unexpected result from HSA_AMD_SVM_ATTRIB_ACCESS_QUERY");
-              break;
-          }
-        }
-        rocr_attr += accessed_by;
-        for (uint32_t idx = entry; idx < device_count; ++idx) {
-          reinterpret_cast<int32_t*>(data[idx])[idx] = static_cast<int32_t>(amd::InvalidDeviceId);
-        }
-        break;
-      }
-      default:
-        return false;
-      break;
-    }
-    // Find the next location in the query
-    ++idx;
-  }
-#endif // AMD_HMM_SUPPORT
   return true;
 }
 
@@ -2429,35 +2447,35 @@ bool Device::GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
 bool Device::SvmAllocInit(void* memory, size_t size) const {
   amd::MemoryAdvice advice = amd::MemoryAdvice::SetAccessedBy;
   constexpr bool kFirstAlloc = true;
-  SetSvmAttributesInt(memory, size, advice, kFirstAlloc);
-
-  if (settings().hmmFlags_ & Settings::Hmm::EnableSystemMemory) {
-    advice = amd::MemoryAdvice::UnsetPreferredLocation;
-    SetSvmAttributesInt(memory, size, advice);
+  if (!SetSvmAttributesInt(memory, size, advice, kFirstAlloc)) {
+    return false;
   }
 
   if ((settings().hmmFlags_ & Settings::Hmm::EnableMallocPrefetch) == 0) {
     return true;
   }
 
-#if AMD_HMM_SUPPORT
-  // Initialize signal for the barrier
-  hsa_signal_store_relaxed(prefetch_signal_, kInitSignalValueOne);
+  if (info().hmmSupported_) {
+    // Initialize signal for the barrier
+    hsa_signal_store_relaxed(prefetch_signal_, kInitSignalValueOne);
 
-  // Initiate a prefetch command which should force memory update in HMM
-  hsa_status_t status = hsa_amd_svm_prefetch_async(memory, size, getBackendDevice(),
-                                                   0, nullptr, prefetch_signal_);
-  if (status != HSA_STATUS_SUCCESS) {
-    LogError("hsa_amd_svm_attributes_get() failed");
-    return false;
+    // Initiate a prefetch command which should force memory update in HMM
+    hsa_status_t status = hsa_amd_svm_prefetch_async(memory, size, getBackendDevice(),
+                                                     0, nullptr, prefetch_signal_);
+    if (status != HSA_STATUS_SUCCESS) {
+      LogError("hsa_amd_svm_prefetch_async() failed");
+      return false;
+    }
+
+    // Wait for the prefetch
+    if (!WaitForSignal(prefetch_signal_)) {
+      LogError("Barrier packet submission failed");
+      return false;
+    }
+  } else {
+    LogWarning("Early prefetch failed, because no HMM support");
   }
 
-  // Wait for the prefetch
-  if (!WaitForSignal(prefetch_signal_)) {
-    LogError("Barrier packet submission failed");
-    return false;
-  }
-#endif // AMD_HMM_SUPPORT
   return true;
 }
 
@@ -2931,6 +2949,20 @@ void Device::getGlobalCUMask(std::string cuMaskStr) {
 
 device::Signal* Device::createSignal() const {
   return new roc::Signal();
+}
+
+amd::Memory* Device::GetArenaMemObj(const void* ptr, size_t& offset) {
+  // If arena_mem_obj_ is null, then HMM and Xnack is disabled. Return nullptr.
+  if (arena_mem_obj_ == nullptr) {
+    return nullptr;
+  }
+
+  // Calculate the offset of the pointer.
+  const void* dev_ptr = reinterpret_cast<void*>(arena_mem_obj_->getDeviceMemory(
+                          *arena_mem_obj_->getContext().devices()[0])->virtualAddress());
+  offset = reinterpret_cast<size_t>(ptr) - reinterpret_cast<size_t>(dev_ptr);
+
+  return arena_mem_obj_;
 }
 
 } // namespace roc

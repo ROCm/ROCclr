@@ -632,13 +632,13 @@ void Buffer::destroy() {
     if (kind_ != MEMORY_KIND_PTRGIVEN) {
       if (isFineGrain) {
         if (memFlags & CL_MEM_ALLOC_HOST_PTR) {
-  #if AMD_HMM_SUPPORT
-          // AMD HMM path. Destroy system memory
-          amd::Os::uncommitMemory(deviceMemory_, size());
-          amd::Os::releaseMemory(deviceMemory_, size());
-  #else
-          dev().hostFree(deviceMemory_, size());;
-  #endif // AMD_HMM_SUPPORT
+          if (dev().info().hmmSupported_) {
+            // AMD HMM path. Destroy system memory
+            amd::Os::uncommitMemory(deviceMemory_, size());
+            amd::Os::releaseMemory(deviceMemory_, size());
+          } else {
+            dev().hostFree(deviceMemory_, size());
+          }
         } else if (memFlags & ROCCLR_MEM_HSA_SIGNAL_MEMORY) {
           if (HSA_STATUS_SUCCESS != hsa_signal_destroy(signal_)) {
             ClPrint(amd::LOG_DEBUG, amd::LOG_MEM,
@@ -724,20 +724,23 @@ bool Buffer::create() {
       flags_ |= HostMemoryDirectAccess;
     }
 
-    if (owner()->getSvmPtr() == reinterpret_cast<void*>(1)) {
+    if (owner()->getSvmPtr() == reinterpret_cast<void*>(amd::Memory::MemoryType::kSvmMemoryPtr)) {
       if (isFineGrain) {
         if (memFlags & CL_MEM_ALLOC_HOST_PTR) {
-#if AMD_HMM_SUPPORT
-          // AMD HMM path. Just allocate system memory and KFD will manage it
-          deviceMemory_ =  amd::Os::reserveMemory(
-              0, size(), amd::Os::pageSize(), amd::Os::MEM_PROT_RW);
-          amd::Os::commitMemory(deviceMemory_, size(), amd::Os::MEM_PROT_RW);
-          // Currently HMM requires cirtain initial calls to mark sysmem allocation as
-          // GPU accessible or prefetch memory into GPU
-          dev().SvmAllocInit(deviceMemory_, size());
-#else
-          deviceMemory_ = dev().hostAlloc(size(), 1, Device::MemorySegment::kNoAtomics);
-#endif // AMD_HMM_SUPPORT
+          if (dev().info().hmmSupported_) {
+            // AMD HMM path. Just allocate system memory and KFD will manage it
+            deviceMemory_ =  amd::Os::reserveMemory(
+                0, size(), amd::Os::pageSize(), amd::Os::MEM_PROT_RW);
+            amd::Os::commitMemory(deviceMemory_, size(), amd::Os::MEM_PROT_RW);
+            // Currently HMM requires cirtain initial calls to mark sysmem allocation as
+            // GPU accessible or prefetch memory into GPU
+            if (!dev().SvmAllocInit(deviceMemory_, size())) {
+              ClPrint(amd::LOG_ERROR, amd::LOG_MEM, "SVM init in ROCr failed!");
+              return false;
+            }
+          } else {
+            deviceMemory_ = dev().hostAlloc(size(), 1, Device::MemorySegment::kNoAtomics);
+          }
         } else if (memFlags & CL_MEM_FOLLOW_USER_NUMA_POLICY) {
           deviceMemory_ = dev().hostNumaAlloc(size(), 1, (memFlags & CL_MEM_SVM_ATOMICS) != 0);
         } else if (memFlags & ROCCLR_MEM_HSA_SIGNAL_MEMORY) {
@@ -774,10 +777,16 @@ bool Buffer::create() {
       owner()->setSvmPtr(deviceMemory_);
     } else {
       deviceMemory_ = owner()->getSvmPtr();
-      kind_ = MEMORY_KIND_PTRGIVEN;
+      if (owner()->getSvmPtr() == reinterpret_cast<void*>(amd::Memory::MemoryType
+                                                          ::kArenaMemoryPtr)) {
+        kind_ = MEMORY_KIND_ARENA;
+      } else {
+        kind_ = MEMORY_KIND_PTRGIVEN;
+      }
     }
 
-    if ((deviceMemory_ != nullptr) && (dev().settings().apuSystem_ || !isFineGrain)) {
+    if ((deviceMemory_ != nullptr) && (dev().settings().apuSystem_ || !isFineGrain)
+                                   && (kind_ != MEMORY_KIND_ARENA)) {
       const_cast<Device&>(dev()).updateFreeMemory(size(), false);
     }
 

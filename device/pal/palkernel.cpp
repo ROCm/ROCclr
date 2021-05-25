@@ -85,15 +85,42 @@ bool HSAILKernel::setKernelCode(amd::hsa::loader::Symbol* sym, amd_kernel_code_t
   return true;
 }
 
-bool HSAILKernel::aqlCreateHWInfo(amd::hsa::loader::Symbol* sym) {
+HSAILKernel::HSAILKernel(std::string name, HSAILProgram* prog, bool internalKernel)
+    : device::Kernel(prog->device(), name, *prog),
+      index_(0),
+      code_(0),
+      codeSize_(0) {
+  flags_.hsa_ = true;
+  flags_.internalKernel_ = internalKernel;
+}
+
+HSAILKernel::~HSAILKernel() {}
+
+bool HSAILKernel::postLoad() {
+  return true;
+}
+
+bool HSAILKernel::init() {
+#if defined(WITH_COMPILER_LIB)
+  hsa_agent_t agent = {amd::Device::toHandle(&(device()))};
+  std::string openClKernelName = openclMangledName(name());
+  amd::hsa::loader::Symbol* sym = prog().getSymbol(openClKernelName.c_str(), &agent);
+  if (!sym) {
+    LogPrintfError("Error: Getting kernel ISA code symbol %s from AMD HSA Code Object failed.\n",
+                   openClKernelName.c_str());
+    return false;
+  }
+
   amd_kernel_code_t* akc = &akc_;
 
   if (!setKernelCode(sym, akc)) {
+    LogError("Error: setKernelCode() failed.");
     return false;
   }
 
   if (!sym->GetInfo(HSA_EXT_EXECUTABLE_SYMBOL_INFO_KERNEL_OBJECT_SIZE,
                     reinterpret_cast<void*>(&codeSize_))) {
+    LogError("Error: sym->GetInfo() failed.");
     return false;
   }
 
@@ -104,48 +131,7 @@ bool HSAILKernel::aqlCreateHWInfo(amd::hsa::loader::Symbol* sym) {
   workgroupGroupSegmentByteSize_ = workGroupInfo_.usedLDSSize_;
   kernargSegmentByteSize_ = akc->kernarg_segment_byte_size;
 
-  return true;
-}
-
-HSAILKernel::HSAILKernel(std::string name, HSAILProgram* prog, std::string compileOptions)
-    : device::Kernel(prog->device(), name, *prog),
-      compileOptions_(compileOptions),
-      index_(0),
-      code_(0),
-      codeSize_(0) {
-  flags_.hsa_ = true;
-}
-
-HSAILKernel::~HSAILKernel() {}
-
-bool HSAILKernel::init(amd::hsa::loader::Symbol* sym, bool finalize) {
-#if defined(WITH_COMPILER_LIB)
   acl_error error = ACL_SUCCESS;
-  std::string openClKernelName = openclMangledName(name());
-  flags_.internalKernel_ =
-      (compileOptions_.find("-cl-internal-kernel") != std::string::npos) ? true : false;
-  // compile kernel down to ISA
-  if (finalize) {
-    std::string options(compileOptions_.c_str());
-    options.append(" -just-kernel=");
-    options.append(openClKernelName.c_str());
-    // Append an option so that we can selectively enable a SCOption on CZ
-    // whenever IOMMUv2 is enabled.
-    if (palNullDevice().settings().svmFineGrainSystem_) {
-      options.append(" -sc-xnack-iommu");
-    }
-    error = amd::Hsail::Compile(palNullDevice().compiler(), prog().binaryElf(), options.c_str(), ACL_TYPE_CG,
-                                ACL_TYPE_ISA, nullptr);
-    buildLog_ += amd::Hsail::GetCompilerLog(palNullDevice().compiler());
-    if (error != ACL_SUCCESS) {
-      LogError("Failed to finalize kernel");
-      return false;
-    }
-  }
-
-  if (!aqlCreateHWInfo(sym)) {
-    return false;
-  }
 
   // Pull out metadata from the ELF
   size_t sizeOfArgList;
@@ -437,13 +423,10 @@ const LightningProgram& LightningKernel::prog() const {
 
 #if defined(USE_COMGR_LIBRARY)
 bool LightningKernel::init() {
-  flags_.internalKernel_ =
-      (compileOptions_.find("-cl-internal-kernel") != std::string::npos) ? true : false;
+  return GetAttrCodePropMetadata();
+}
 
-  if (!GetAttrCodePropMetadata()) {
-    return false;
-  }
-
+bool LightningKernel::postLoad() {
   if (codeObjectVer() == 2) {
     symbolName_ =  name();
   }
@@ -451,7 +434,7 @@ bool LightningKernel::init() {
   // Copy codeobject of this kernel from the program CPU segment
   hsa_agent_t agent = {amd::Device::toHandle(&(device()))};
 
-  auto sym = prog().GetSymbol(symbolName().c_str(), &agent);
+  auto sym = prog().getSymbol(symbolName().c_str(), &agent);
 
   if (!setKernelCode(sym, &akc_)) {
     return false;
@@ -465,7 +448,7 @@ bool LightningKernel::init() {
       amd::hsa::loader::Symbol* rth_symbol;
 
       // Get the runtime handle symbol GPU address
-      rth_symbol = prog().GetSymbol(RuntimeHandle().c_str(), &agent);
+      rth_symbol = prog().getSymbol(RuntimeHandle().c_str(), &agent);
       uint64_t symbol_address;
       rth_symbol->GetInfo(HSA_EXECUTABLE_SYMBOL_INFO_VARIABLE_ADDRESS, &symbol_address);
 

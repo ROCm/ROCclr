@@ -366,6 +366,10 @@ bool Device::BlitProgram::create(amd::Device* device, const char* extraKernels,
     DevLogPrintfError("Build failed for Kernel: %s \n", kernels.c_str());
     return false;
   }
+  if (!program_->load()) {
+    DevLogPrintfError("Could not load the kernels: %s \n", kernels.c_str());
+    return false;
+  }
 
   return true;
 }
@@ -439,6 +443,7 @@ Device::Device()
       blitProgram_(nullptr),
       hwDebugMgr_(nullptr),
       context_(nullptr),
+      arena_mem_obj_(nullptr),
       vaCacheAccess_(nullptr),
       vaCacheMap_(nullptr),
       index_(0) {
@@ -453,6 +458,10 @@ Device::~Device() {
 
   if (vaCacheAccess_) {
     delete vaCacheAccess_;
+  }
+
+  if (arena_mem_obj_ != nullptr) {
+    arena_mem_obj_->release();
   }
 
   // Destroy device settings
@@ -673,7 +682,6 @@ char* Device::getExtensionString() {
 
   return result;
 }
-
 
 }  // namespace amd
 
