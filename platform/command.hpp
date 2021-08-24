@@ -207,7 +207,7 @@ class Event : public RuntimeObject {
 
   /*! \brief Notifies current command queue about execution status
    */
-  bool notifyCmdQueue();
+  bool notifyCmdQueue(bool cpu_wait = false);
 
   //! RTTI internal implementation
   virtual ObjectType objectType() const { return ObjectTypeEvent; }
@@ -242,6 +242,8 @@ class Command : public Event {
   const Event* waitingEvent_;     //!< Waiting event associated with the marker
 
  protected:
+  bool cpu_wait_ = false;         //!< If true, then the command was issued for CPU/GPU sync
+
   //! The Events that need to complete before this command is submitted.
   EventWaitList eventWaitList_;
 
@@ -336,6 +338,9 @@ class Command : public Event {
   Command* GetBatchHead() const { return batch_head_; }
 
   const Event* waitingEvent() const { return waitingEvent_; }
+
+  //! Check if this command(should be a marker) requires CPU wait
+  bool CpuWaitRequested() const { return cpu_wait_; }
 };
 
 class UserEvent : public Command {
@@ -641,7 +646,7 @@ class FillMemoryCommand : public OneMemoryArgCommand {
 
 class StreamOperationCommand : public OneMemoryArgCommand {
  private:
-  int64_t value_;       // !< Value to Wait on or to Write.
+  uint64_t value_;       // !< Value to Wait on or to Write.
   uint64_t mask_;       // !< Mask to be applied on signal value for Wait operation.
   unsigned int flags_;  // !< Flags defining the Wait condition.
   size_t offset_;       // !< Offset into memory for Write
@@ -652,7 +657,7 @@ class StreamOperationCommand : public OneMemoryArgCommand {
 
  public:
   StreamOperationCommand(HostQueue& queue, cl_command_type cmdType,
-                         const EventWaitList& eventWaitList, Memory& memory, const int64_t value,
+                         const EventWaitList& eventWaitList, Memory& memory, const uint64_t value,
                          const uint64_t mask, unsigned int flags, size_t offset, size_t sizeBytes)
       : OneMemoryArgCommand(queue, cmdType, eventWaitList, memory),
         value_(value),
@@ -670,7 +675,7 @@ class StreamOperationCommand : public OneMemoryArgCommand {
   virtual void submit(device::VirtualDevice& device) { device.submitStreamOperation(*this); }
 
   //! Returns the value
-  const int64_t value() const { return value_; }
+  const uint64_t value() const { return value_; }
   //! Returns the wait mask
   const uint64_t mask() const { return mask_; }
   //! Return the wait flags
@@ -910,8 +915,17 @@ class NDRangeKernelCommand : public Command {
   //! Return the kernel NDRange.
   const NDRangeContainer& sizes() const { return sizes_; }
 
+  //! updates kernel NDRange.
+  void setSizes(const size_t* globalWorkOffset, const size_t* globalWorkSize,
+                const size_t* localWorkSize) {
+    sizes_.update(3, globalWorkOffset, globalWorkSize, localWorkSize);
+  }
+
   //! Return the shared memory size
   uint32_t sharedMemBytes() const { return sharedMemBytes_; }
+
+  //! updates shared memory size
+  void setSharedMemBytes(uint32_t sharedMemBytes) { sharedMemBytes_ = sharedMemBytes; }
 
   //! Return the cooperative groups mode
   bool cooperativeGroups() const { return (extraParam_ & CooperativeGroups) ? true : false; }
@@ -1001,12 +1015,11 @@ class Marker : public Command {
  public:
   //! Create a new Marker
   Marker(HostQueue& queue, bool userVisible, const EventWaitList& eventWaitList = nullWaitList,
-         const Event* waitingEvent = nullptr)
-      : Command(queue, userVisible ? CL_COMMAND_MARKER : 0, eventWaitList, 0, waitingEvent) {}
+         const Event* waitingEvent = nullptr, bool cpu_wait = false)
+      : Command(queue, userVisible ? CL_COMMAND_MARKER : 0, eventWaitList, 0, waitingEvent) { cpu_wait_ = cpu_wait; }
 
   //! The actual command implementation.
   virtual void submit(device::VirtualDevice& device) { device.submitMarker(*this); }
-
 };
 
 /*! \brief  Maps CL objects created from external ones and syncs the contents (blocking).

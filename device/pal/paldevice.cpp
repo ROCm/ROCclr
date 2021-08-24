@@ -881,7 +881,7 @@ bool Device::create(Pal::IDevice* device) {
   Pal::PalPublicSettings* const palSettings = iDev()->GetPublicSettings();
   // Modify settings here
   // palSettings ...
-  palSettings->forceHighClocks = appProfile_.enableHighPerformanceState();
+  palSettings->forceHighClocks = amd::IS_HIP || appProfile_.enableHighPerformanceState();
   palSettings->longRunningSubmissions = true;
   palSettings->cmdBufBatchedSubmitChainLimit = 0;
   palSettings->disableResourceProcessingManager = true;
@@ -1396,7 +1396,8 @@ pal::Memory* Device::createBuffer(amd::Memory& owner, bool directAccess) const {
       return nullptr;
     }
 
-    if (nullptr != owner.parent()->getSvmPtr()) {
+    if ((nullptr != owner.parent()->getSvmPtr()) &&
+        (owner.parent()->getContext().devices().size() > 1)) {
       amd::Memory* amdParent = owner.parent();
       {
         // Lock memory object, so only one commitment will occur

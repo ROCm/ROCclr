@@ -153,7 +153,7 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
     {"gfx908:sramecc-",        nullptr,     true,  false, false,              9,  0,  8,    OFF,    ANY,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx908:sramecc+",        nullptr,     true,  false, false,              9,  0,  8,    ON,     ANY,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx908:xnack-",          nullptr,     true,  false, false,              9,  0,  8,    ANY,    OFF,  4,    16,   1,    256,    64 * Ki, 32},
-    {"gfx908:xnack-",          nullptr,     true,  false, false,              9,  0,  8,    ANY,    ON,   4,    16,   1,    256,    64 * Ki, 32},
+    {"gfx908:xnack+",          nullptr,     true,  false, false,              9,  0,  8,    ANY,    ON,   4,    16,   1,    256,    64 * Ki, 32},
     {"gfx908:sramecc-:xnack-", nullptr,     true,  false, false,              9,  0,  8,    OFF,    OFF,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx908:sramecc-:xnack+", nullptr,     true,  false, false,              9,  0,  8,    OFF,    ON,   4,    16,   1,    256,    64 * Ki, 32},
     {"gfx908:sramecc+:xnack-", nullptr,     true,  false, false,              9,  0,  8,    ON,     OFF,  4,    16,   1,    256,    64 * Ki, 32},
@@ -165,7 +165,7 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
     {"gfx90a:sramecc-",        nullptr,     true,  false, false,              9,  0,  10,   OFF,    ANY,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a:sramecc+",        nullptr,     true,  false, false,              9,  0,  10,   ON,     ANY,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a:xnack-",          nullptr,     true,  false, false,              9,  0,  10,   ANY,    OFF,  4,    16,   1,    256,    64 * Ki, 32},
-    {"gfx90a:xnack-",          nullptr,     true,  false, false,              9,  0,  10,   ANY,    ON,   4,    16,   1,    256,    64 * Ki, 32},
+    {"gfx90a:xnack+",          nullptr,     true,  false, false,              9,  0,  10,   ANY,    ON,   4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a:sramecc-:xnack-", nullptr,     true,  false, false,              9,  0,  10,   OFF,    OFF,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a:sramecc-:xnack+", nullptr,     true,  false, false,              9,  0,  10,   OFF,    ON,   4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a:sramecc+:xnack-", nullptr,     true,  false, false,              9,  0,  10,   ON,     OFF,  4,    16,   1,    256,    64 * Ki, 32},
@@ -182,11 +182,15 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
     {"gfx1012",                "gfx1012",   true,  true,  false,              10, 1,  2,    NONE,   ANY,  2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1012:xnack-",         "gfx1012",   true,  true,  false,              10, 1,  2,    NONE,   OFF,  2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1012:xnack+",         nullptr,     true,  true,  false,              10, 1,  2,    NONE,   ON,   2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1013",                "gfx1013",   true,  false, false,              10, 1,  3,    NONE,   ANY,  2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1013:xnack-",         "gfx1013",   true,  false, false,              10, 1,  3,    NONE,   OFF,  2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1013:xnack+",         nullptr,     true,  false, false,              10, 1,  3,    NONE,   ON,   2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1030",                "gfx1030",   true,  true,  false,              10, 3,  0,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1031",                "gfx1031",   true,  true,  false,              10, 3,  1,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1032",                "gfx1032",   true,  true,  false,              10, 3,  2,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1033",                "gfx1033",   true,  false, false,              10, 3,  3,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1034",                "gfx1034",   true,  true,  false,              10, 3,  4,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1035",                "gfx1035",   true,  false,  false,             10, 3,  5,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
   };
   return std::make_pair(std::begin(supportedIsas_), std::end(supportedIsas_));
 }
@@ -333,9 +337,11 @@ void MemObjMap::Purge(amd::Device* dev) {
   assert(dev != nullptr);
 
   amd::ScopedLock lock(AllocatedLock_);
-  for (auto it = MemObjMap_.cbegin() ; it != MemObjMap_.cend() ;) {
-    const std::vector<Device*>& devices = it->second->getContext().devices();
-    if (devices.size() == 1 && devices[0] == dev) {
+  for (auto it = MemObjMap_.cbegin(); it != MemObjMap_.cend(); ) {
+    amd::Memory* memObj = it->second;
+    unsigned int flags = memObj->getMemFlags();
+    const std::vector<Device*>& devices = memObj->getContext().devices();
+    if (devices.size() == 1 && devices[0] == dev && !(flags & ROCCLR_MEM_INTERNAL_MEMORY)) {
       it = MemObjMap_.erase(it);
     } else {
       ++it;

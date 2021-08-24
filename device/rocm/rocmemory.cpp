@@ -269,13 +269,12 @@ bool Memory::createInteropBuffer(GLenum targetType, int miplevel) {
 
   if (status != HSA_STATUS_SUCCESS) return false;
 
-  //! @todo Need to handle metadata correctly
-#if 0
-  // if map_buffer wrote anything in metadata, copy it to amdImageDesc_
-  if (metadata_size != 0) {
+  // if map_buffer wrote a legitimate SRD, copy it to amdImageDesc_
+  if ((metadata_size != 0) &&
+      (reinterpret_cast<hsa_amd_image_descriptor_t*>(metadata)->deviceID ==
+       amdImageDesc_->deviceID)) {
     memcpy(amdImageDesc_, metadata, metadata_size);
   }
-#endif //0
 
   kind_ = MEMORY_KIND_INTEROP;
   assert(deviceMemory_ != nullptr && "Interop map failed to produce a pointer!");
@@ -1006,28 +1005,28 @@ void Image::populateImageDescriptor() {
   switch (image->getType()) {
     case CL_MEM_OBJECT_IMAGE1D:
       imageDescriptor_.geometry = HSA_EXT_IMAGE_GEOMETRY_1D;
-      imageDescriptor_.height = 1;
-      imageDescriptor_.depth = 1;
+      imageDescriptor_.height = 0;
+      imageDescriptor_.depth = 0;
       break;
     case CL_MEM_OBJECT_IMAGE1D_BUFFER:
       imageDescriptor_.geometry = HSA_EXT_IMAGE_GEOMETRY_1DB;
-      imageDescriptor_.height = 1;
-      imageDescriptor_.depth = 1;
+      imageDescriptor_.height = 0;
+      imageDescriptor_.depth = 0;
       break;
     case CL_MEM_OBJECT_IMAGE1D_ARRAY:
       //@todo - arraySize = height ?!
       imageDescriptor_.geometry = HSA_EXT_IMAGE_GEOMETRY_1DA;
-      imageDescriptor_.height = 1;
+      imageDescriptor_.height = 0;
       imageDescriptor_.array_size = image->getHeight();
       break;
     case CL_MEM_OBJECT_IMAGE2D:
       imageDescriptor_.geometry = HSA_EXT_IMAGE_GEOMETRY_2D;
-      imageDescriptor_.depth = 1;
+      imageDescriptor_.depth = 0;
       break;
     case CL_MEM_OBJECT_IMAGE2D_ARRAY:
       //@todo - arraySize = depth ?!
       imageDescriptor_.geometry = HSA_EXT_IMAGE_GEOMETRY_2DA;
-      imageDescriptor_.depth = 1;
+      imageDescriptor_.depth = 0;
       imageDescriptor_.array_size = image->getDepth();
       break;
     case CL_MEM_OBJECT_IMAGE3D:

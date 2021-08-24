@@ -18,31 +18,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-if(AMD_UGL_FOUND)
-  return()
+include_guard()
+
+if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  if (CMAKE_VERSION VERSION_LESS "3.20")
+    # This code is neccessary to avoid this command line warning:
+    # "Overriding /GR with /GR- cl: command line warning D9025"
+    #
+    # /GR is implied by MSVC anyway. So getting rid of it doesn't matter.
+    string(REPLACE "/GR" "" CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS})
+  endif()
 endif()
-
-find_path(AMD_UGL_INCLUDE_DIR GL/glx.h
-  HINTS
-    ${AMD_DRIVERS_PATH}
-  PATHS
-    # p4 repo layout
-    ${CMAKE_SOURCE_DIR}/drivers
-    ${CMAKE_SOURCE_DIR}/../drivers
-    ${CMAKE_SOURCE_DIR}/../../drivers
-    # github ent repo layout
-    ${CMAKE_SOURCE_DIR}/drivers/drivers
-    ${CMAKE_SOURCE_DIR}/../drivers/drivers
-    ${CMAKE_SOURCE_DIR}/../../drivers/drivers
-  PATH_SUFFIXES
-    ugl/inc
-  NO_DEFAULT_PATH)
-
-include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(AMD_UGL
-  "\nAMD UGL not found"
-  AMD_UGL_INCLUDE_DIR)
-mark_as_advanced(AMD_UGL_INCLUDE_DIR)
-
-set(AMD_UGL_INCLUDE_DIRS ${AMD_UGL_INCLUDE_DIR} ${ROCCLR_SRC_DIR}/device/gpu/gslbe/src/rt)
-mark_as_advanced(AMD_UGL_INCLUDE_DIRS)

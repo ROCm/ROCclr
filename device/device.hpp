@@ -841,7 +841,8 @@ class Memory : public amd::HeapObject {
     SubMemoryObject = 0x00000008,         //!< Memory is sub-memory
     HostMemoryRegistered = 0x00000010,    //!< Host memory was registered
     MemoryCpuUncached = 0x00000020,       //!< Memory is uncached on CPU access(slow read)
-    AllowedPeerAccess = 0x00000040        //!< Memory can be accessed from peer
+    AllowedPeerAccess = 0x00000040,       //!< Memory can be accessed from peer
+    PersistentMap = 0x00000080            //!< Map Peristent memory
   };
   uint flags_;  //!< Memory object flags
 
@@ -1245,7 +1246,7 @@ class MemObjMap : public AllStatic {
   static amd::Memory* FindMemObj(
       const void* k);  //!< find the mem object based on the input pointer
   static void UpdateAccess(amd::Device *peerDev);
-  static void Purge(amd::Device*dev); //!< Purge all the memories on the given device
+  static void Purge(amd::Device* dev); //!< Purge all user allocated memories on the given device
  private:
   static std::map<uintptr_t, amd::Memory*>
       MemObjMap_;                      //!< the mem object<->hostptr information container

@@ -45,34 +45,34 @@ constexpr static uint64_t kTimeout100us = 100 * K;
 constexpr static uint64_t kUnlimitedWait = std::numeric_limits<uint64_t>::max();
 
 template <bool active_wait_timeout = false>
-inline bool WaitForSignal(hsa_signal_t signal) {
+inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false) {
   if (hsa_signal_load_relaxed(signal) > 0) {
-    if (active_wait_timeout) {
-      uint64_t timeout = ROC_ACTIVE_WAIT_TIMEOUT * K;
+    uint64_t timeout = kTimeout100us;
+    if (active_wait) {
+      timeout = kUnlimitedWait;
+    } else if (active_wait_timeout) {
+      timeout = ROC_ACTIVE_WAIT_TIMEOUT * K;
       if (timeout == 0) {
         return false;
       }
-      ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Host active wait for Signal = (0x%lx) for %d us",
-              signal.handle, ROC_ACTIVE_WAIT_TIMEOUT);
+    }
 
-      if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                    timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
+    ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Host active wait for Signal = (0x%lx) for %d ns",
+            signal.handle, timeout);
+
+    // Active wait with a timeout
+    if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
+                                  timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
+      if (active_wait_timeout) {
         return false;
       }
-    } else {
-
-      uint64_t timeout = kTimeout100us;
-      ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Host wait until Signal = (0x%lx) decremented",
+      ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Host blocked wait for Signal = (0x%lx)",
               signal.handle);
 
-      // Active wait with a timeout
+      // Wait until the completion with CPU suspend
       if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                    timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
-        // Wait until the completion with CPU suspend
-        if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                      kUnlimitedWait, HSA_WAIT_STATE_BLOCKED) != 0) {
-          return false;
-        }
+                                    kUnlimitedWait, HSA_WAIT_STATE_BLOCKED) != 0) {
+        return false;
       }
     }
   }
@@ -82,29 +82,31 @@ inline bool WaitForSignal(hsa_signal_t signal) {
 
 // Timestamp for keeping track of some profiling information for various commands
 // including EnqueueNDRangeKernel and clEnqueueCopyBuffer.
-class Timestamp : public amd::HeapObject {
+class Timestamp : public amd::ReferenceCountedObject {
  private:
   static double ticksToTime_;
 
   uint64_t    start_;
   uint64_t    end_;
   VirtualGPU* gpu_;               //!< Virtual GPU, associated with this timestamp
-  const amd::Command& command_;   //!< Command, associated with this timestamp
+  amd::Command& command_;         ///!< Command, associated with this timestamp
   amd::Command* parsedCommand_;   //!< Command down the list, considering command_ as head
   std::vector<ProfilingSignal*> signals_; //!< The list of all signals, associated with the TS
   hsa_signal_t callback_signal_;  //!< Signal associated with a callback for possible later update
+  amd::Monitor  lock_;            //!< Serialize timestamp update
 
   Timestamp(const Timestamp&) = delete;
   Timestamp& operator=(const Timestamp&) = delete;
 
  public:
-  Timestamp(VirtualGPU* gpu, const amd::Command& command)
+  Timestamp(VirtualGPU* gpu, amd::Command& command)
     : start_(std::numeric_limits<uint64_t>::max())
     , end_(0)
     , gpu_(gpu)
     , command_(command)
     , parsedCommand_(nullptr)
-    , callback_signal_(hsa_signal_t{}) {}
+    , callback_signal_(hsa_signal_t{})
+    , lock_("Timestamp lock", true) {}
 
   ~Timestamp() {}
 
@@ -144,7 +146,7 @@ class Timestamp : public amd::HeapObject {
   static double getGpuTicksToTime() { return ticksToTime_; }
 
   //! Returns amd::command assigned to this timestamp
-  const amd::Command& command() const { return command_; }
+  amd::Command& command() const { return command_; }
 
   //! Sets the parsed command
   void setParsedCommand(amd::Command* command) { parsedCommand_ = command; }
@@ -223,6 +225,7 @@ class VirtualGPU : public device::VirtualDevice {
 
     //! Update current active engine
     void SetActiveEngine(HwQueueEngine engine = HwQueueEngine::Compute) { engine_ = engine; }
+    HwQueueEngine GetActiveEngine() const { return engine_; }
 
     //! Returns the last submitted signal for a wait
     std::vector<hsa_signal_t>& WaitingSignal(HwQueueEngine engine = HwQueueEngine::Compute);
@@ -385,8 +388,7 @@ class VirtualGPU : public device::VirtualDevice {
   template <typename AqlPacket> bool dispatchGenericAqlPacket(AqlPacket* packet, uint16_t header,
                                                               uint16_t rest, bool blocking,
                                                               size_t size = 1);
-  void dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal = false,
-                             const ProfilingSignal* global_signal = nullptr);
+  void dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal = false);
   bool dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet, const uint32_t gfxVersion,
                                 bool blocking, const hsa_ven_amd_aqlprofile_1_00_pfn_t* extApi);
   void dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t* packet,
