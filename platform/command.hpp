@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2010 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -89,10 +89,14 @@ class Event : public RuntimeObject {
 
  private:
   Monitor lock_;
+  Monitor notify_lock_;   //!< Lock used for notification with direct dispatch only
 
   std::atomic<CallBackEntry*> callbacks_;  //!< linked list of callback entries.
   std::atomic<int32_t> status_;            //!< current execution status.
   std::atomic_flag notified_;              //!< Command queue was notified
+  void*  hw_event_;                        //!< HW event ID associated with SW event
+  Event* notify_event_;                    //!< Notify event, which should contain HW signal
+  const Device* device_;                   //!< Device, this event associated with
 
  protected:
   static const EventWaitList nullWaitList;
@@ -210,6 +214,15 @@ class Event : public RuntimeObject {
 
   //! Returns the callback for this event
   const CallBackEntry* Callback() const { return callbacks_; }
+
+  // Saves HW event, associated with the current command
+  void SetHwEvent(void* hw_event) { hw_event_ = hw_event; }
+
+  //! Returns HW event, associated with the current command
+  void* HwEvent() const { return hw_event_; }
+
+  //! Returns notify even associated with the current command
+  Event* NotifyEvent() const { return notify_event_; }
 };
 
 /*! \brief An operation that is submitted to a command queue.
@@ -251,7 +264,10 @@ class Command : public Event {
         eventWaitList_(nullWaitList),
         commandWaitBits_(0) {}
 
-  bool terminate() {
+  virtual bool terminate() {
+    if (IS_HIP) {
+      releaseResources();
+    }
     if (Agent::shouldPostEventEvents() && type() != 0) {
       Agent::postEventFree(as_cl(static_cast<Event*>(this)));
     }

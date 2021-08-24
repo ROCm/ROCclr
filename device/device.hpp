@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2008 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -40,6 +40,12 @@
 #include "hwdebug.hpp"
 #include "devsignal.hpp"
 
+#if defined(__clang__)
+#if __has_feature(address_sanitizer)
+#include "devurilocator.hpp"
+#endif
+#endif
+
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -49,6 +55,7 @@
 #include <map>
 #include <list>
 #include <set>
+#include <unordered_set>
 #include <utility>
 
 namespace amd {
@@ -97,10 +104,11 @@ enum MemoryAdvice : uint32_t {
   UnsetReadMostly = 2,        ///< Undo the effect of hipMemAdviseSetReadMostly
   SetPreferredLocation = 3,   ///< Set the preferred location for the data as the specified device
   UnsetPreferredLocation = 4, ///< Clear the preferred location for the data
-  SetAccessedBy = 5,          ///< Data will be accessed by the specified device,
-                              ///< so prevent page faults as much as possible
-  UnsetAccessedBy = 6         ///< Let the Unified Memory subsystem decide on
-                              ///< the page faulting policy for the specified device
+  SetAccessedBy = 5,          ///< Data will be accessed by the specified device, reducing
+                              ///< the amount of page faults
+  UnsetAccessedBy = 6,        ///< HMM decides on the page faulting policy for the specified device
+  SetCoarseGrain = 100,       ///< Change cache policy to improve performance (disables coherency)
+  UnsetCoarseGrain = 101      ///< Restore coherent cache policy at the cost of some performance
 };
 
 enum MemRangeAttribute : uint32_t {
@@ -1237,6 +1245,7 @@ class MemObjMap : public AllStatic {
   static amd::Memory* FindMemObj(
       const void* k);  //!< find the mem object based on the input pointer
   static void UpdateAccess(amd::Device *peerDev);
+  static void Purge(amd::Device*dev); //!< Purge all the memories on the given device
  private:
   static std::map<uintptr_t, amd::Memory*>
       MemObjMap_;                      //!< the mem object<->hostptr information container
@@ -1297,6 +1306,9 @@ class Isa {
 
   /// @returns If the PAL runtime supports the ISA.
   bool runtimePalSupported() const {
+    if (IS_LINUX && (GPU_ENABLE_PAL == 2) && (versionMajor_ >= 9)) {
+      return false;
+    }
     return runtimePalSupported_;
   }
 
@@ -1692,6 +1704,16 @@ class Device : public RuntimeObject {
                             cl_set_device_clock_mode_output_amd* pSetClockModeOutput) {
     return true;
   };
+
+  // Returns the status of HW event, associated with amd::Event
+  virtual bool IsHwEventReady(
+      const amd::Event& event,  //!< AMD event for HW status validation
+      bool wait = false         //!< If true then forces the event completion
+      ) const {
+    return false;
+  };
+  virtual void ReleaseGlobalSignal(void* signal) const {}
+
   //! Returns TRUE if the device is available for computations
   bool isOnline() const { return online_; }
 
@@ -1820,9 +1842,13 @@ class Device : public RuntimeObject {
   void SetActiveWait(bool state) { activeWait_ = state; }
 
   virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset) {
-    ShouldNotReachHere();
     return nullptr;
   }
+#if defined(__clang__)
+#if __has_feature(address_sanitizer)
+  virtual device::UriLocator* createUriLocator() const = 0;
+#endif
+#endif
 
  protected:
   //! Enable the specified extension

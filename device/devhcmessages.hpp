@@ -1,4 +1,4 @@
-/* Copyright (c) 2020-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2020 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -70,7 +70,12 @@ enum ServiceID {
   SERVICE_RESERVED = 0,
   SERVICE_FUNCTION_CALL = 1,
   SERVICE_PRINTF = 2,
-  SERVICE_DEVMEM = 3,
+  SERVICE_DEVMEM = 3
+  #if defined(__clang__)
+  #if __has_feature(address_sanitizer)
+   , SERVICE_SANITIZER = 4
+  #endif
+  #endif
 };
 
 struct Message;

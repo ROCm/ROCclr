@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2008 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -93,7 +93,7 @@ static constexpr PalDevice supportedPalDevices[] = {
   {9,  0,  2,  Pal::GfxIpLevel::GfxIp9,    "gfx902",        Pal::AsicRevision::Raven},
   {9,  0,  4,  Pal::GfxIpLevel::GfxIp9,    "gfx904",        Pal::AsicRevision::Vega12},
   {9,  0,  6,  Pal::GfxIpLevel::GfxIp9,    "gfx906",        Pal::AsicRevision::Vega20},
-  {9,  0,  9,  Pal::GfxIpLevel::GfxIp9,    "gfx909",        Pal::AsicRevision::Raven2},
+  {9,  0,  2,  Pal::GfxIpLevel::GfxIp9,    "gfx902",        Pal::AsicRevision::Raven2},
   {9,  0, 12,  Pal::GfxIpLevel::GfxIp9,    "gfx90c",        Pal::AsicRevision::Renoir},
   {10, 1,  0,  Pal::GfxIpLevel::GfxIp10_1, "gfx1010",       Pal::AsicRevision::Navi10},
   {10, 1,  1,  Pal::GfxIpLevel::GfxIp10_1, "gfx1011",       Pal::AsicRevision::Navi12},
@@ -101,6 +101,7 @@ static constexpr PalDevice supportedPalDevices[] = {
   {10, 3,  0,  Pal::GfxIpLevel::GfxIp10_3, "gfx1030",       Pal::AsicRevision::Navi21},
   {10, 3,  1,  Pal::GfxIpLevel::GfxIp10_3, "gfx1031",       Pal::AsicRevision::Navi22},
   {10, 3,  2,  Pal::GfxIpLevel::GfxIp10_3, "gfx1032",       Pal::AsicRevision::Navi23},
+  {10, 3,  4,  Pal::GfxIpLevel::GfxIp10_3, "gfx1034",       Pal::AsicRevision::Navi24},
 };
 
 static std::tuple<const amd::Isa*, const char*> findIsa(Pal::AsicRevision asicRevision,

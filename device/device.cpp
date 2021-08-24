@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2008 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -158,9 +158,9 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
     {"gfx908:sramecc-:xnack+", nullptr,     true,  false, false,              9,  0,  8,    OFF,    ON,   4,    16,   1,    256,    64 * Ki, 32},
     {"gfx908:sramecc+:xnack-", nullptr,     true,  false, false,              9,  0,  8,    ON,     OFF,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx908:sramecc+:xnack+", nullptr,     true,  false, false,              9,  0,  8,    ON,     ON,   4,    16,   1,    256,    64 * Ki, 32},
-    {"gfx909",                 nullptr,     false, false, false,              9,  0,  9,    NONE,   ANY,  4,    16,   1,    256,    64 * Ki, 32}, // Also Raven2 (can execute Raven code)
-    {"gfx909:xnack-",          nullptr,     false, false, false,              9,  0,  9,    NONE,   OFF,  4,    16,   1,    256,    64 * Ki, 32},
-    {"gfx909:xnack+",          nullptr,     false, false, false,              9,  0,  9,    NONE,   ON,   4,    16,   1,    256,    64 * Ki, 32},
+    {"gfx902",                 "gfx903",    false, true,  false,              9,  0,  2,    NONE,   ANY,  4,    16,   1,    256,    64 * Ki, 32}, // Also Raven2 (can execute Raven code)
+    {"gfx902:xnack-",          "gfx902",    false, true,  false,              9,  0,  2,    NONE,   OFF,  4,    16,   1,    256,    64 * Ki, 32},
+    {"gfx902:xnack+",          "gfx902",    false, true,  false,              9,  0,  2,    NONE,   ON,   4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a",                 nullptr,     true,  false, false,              9,  0,  10,   ANY,    ANY,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a:sramecc-",        nullptr,     true,  false, false,              9,  0,  10,   OFF,    ANY,  4,    16,   1,    256,    64 * Ki, 32},
     {"gfx90a:sramecc+",        nullptr,     true,  false, false,              9,  0,  10,   ON,     ANY,  4,    16,   1,    256,    64 * Ki, 32},
@@ -185,6 +185,8 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
     {"gfx1030",                "gfx1030",   true,  true,  false,              10, 3,  0,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1031",                "gfx1031",   true,  true,  false,              10, 3,  1,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1032",                "gfx1032",   true,  true,  false,              10, 3,  2,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1033",                "gfx1033",   true,  false, false,              10, 3,  3,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1034",                "gfx1034",   true,  true,  false,              10, 3,  4,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
   };
   return std::make_pair(std::begin(supportedIsas_), std::end(supportedIsas_));
 }
@@ -327,6 +329,20 @@ void MemObjMap::UpdateAccess(amd::Device *peerDev) {
   }
 }
 
+void MemObjMap::Purge(amd::Device* dev) {
+  assert(dev != nullptr);
+
+  amd::ScopedLock lock(AllocatedLock_);
+  for (auto it = MemObjMap_.cbegin() ; it != MemObjMap_.cend() ;) {
+    const std::vector<Device*>& devices = it->second->getContext().devices();
+    if (devices.size() == 1 && devices[0] == dev) {
+      it = MemObjMap_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
 Device::BlitProgram::~BlitProgram() {
   if (program_ != nullptr) {
     program_->release();
@@ -390,14 +406,17 @@ bool Device::init() {
     // If returned false, error initializing HSA stack.
     // If returned true, either HSA not installed or HSA stack
     //                   successfully initialized.
-    if (!roc::Device::init()) {
+    ret = roc::Device::init();
+    if (!ret) {
       // abort() commentted because this is the only indication
       // that KFD is not installed.
       // Ignore the failure and assume KFD is not installed.
       // abort();
       DevLogError("KFD is not installed \n");
     }
-    ret |= roc::NullDevice::init();
+    if (!amd::IS_HIP) {
+      ret |= roc::NullDevice::init();
+    }
   }
 #endif  // WITH_HSA_DEVICE
 #if defined(WITH_GPU_DEVICE)

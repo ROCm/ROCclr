@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2010 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -28,7 +28,7 @@
 #endif  // AMD_PLATFORM_NAME
 
 #ifndef AMD_PLATFORM_BUILD_NUMBER
-#define AMD_PLATFORM_BUILD_NUMBER 3313
+#define AMD_PLATFORM_BUILD_NUMBER 3337
 #endif  // AMD_PLATFORM_BUILD_NUMBER
 
 #ifndef AMD_PLATFORM_REVISION_NUMBER

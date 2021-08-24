@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2012 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -107,9 +107,9 @@ void HostQueue::finish() {
   Command* command = nullptr;
   if (IS_HIP) {
     command = getLastQueuedCommand(true);
-    if (nullptr != command) {
-      command->awaitCompletion();
-      command->release();
+    // Check if the queue has nothing to process and return
+    if (command == nullptr) {
+      return;
     }
   }
   if (nullptr == command) {
@@ -120,8 +120,21 @@ void HostQueue::finish() {
     }
     ClPrint(LOG_DEBUG, LOG_CMD, "marker is queued");
     command->enqueue();
+  }
+  // Check HW status of the ROCcrl event. Note: not all ROCclr modes support HW status
+  static constexpr bool kWaitCompletion = true;
+  if (!device().IsHwEventReady(command->event(), kWaitCompletion)) {
+    ClPrint(LOG_DEBUG, LOG_CMD, "HW Event not ready, awaiting completion instead");
     command->awaitCompletion();
-    command->release();
+  }
+  command->release();
+  if (IS_HIP) {
+    ScopedLock sl(vdev()->execution());
+    ScopedLock l(lastCmdLock_);
+    if (lastEnqueueCommand_ != nullptr) {
+      lastEnqueueCommand_->release();
+      lastEnqueueCommand_ = nullptr;
+    }
   }
   ClPrint(LOG_DEBUG, LOG_CMD, "All commands finished");
 }
@@ -238,7 +251,6 @@ Command* HostQueue::getLastQueuedCommand(bool retain) {
     // The batch update must be lock protected to avoid a race condition
     // when multiple threads submit/flush/update the batch at the same time
     ScopedLock sl(vdev()->execution());
-
     // Since the lastCmdLock_ is acquired, it is safe to read and retain the lastEnqueueCommand.
     // It is guaranteed that the pointer will not change.
     if (retain && lastEnqueueCommand_ != nullptr) {

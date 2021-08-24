@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2008 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -711,14 +711,6 @@ bool Program::compileImplLC(const std::string& sourceCode,
       f.close();
     } else {
       buildLog_ += "Warning: opening the file to dump the OpenCL source failed.\n";
-    }
-  }
-  // Append Options provided by user to driver options
-  if (isHIP()) {
-    if (options->origOptionStr.size()) {
-      std::istringstream userOptions{options->origOptionStr};
-      std::copy(std::istream_iterator<std::string>(userOptions),
-                std::istream_iterator<std::string>(), std::back_inserter(driverOptions));
     }
   }
 

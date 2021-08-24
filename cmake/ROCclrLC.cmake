@@ -1,4 +1,4 @@
-# Copyright (C) 2019-2021 Advanced Micro Devices, Inc. All Rights Reserved.
+# Copyright (c) 2020 - 2021 Advanced Micro Devices, Inc. All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -18,19 +18,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-# Try to find ROCT (Radeon Open Compute Thunk)
-#
-# Once found, this will define:
-#   - ROCT_FOUND     - ROCT status (found or not found)
-#   - ROCT_INCLUDES  - Required ROCT include directories
-#   - ROCT_LIBRARIES - Required ROCT libraries
-find_path(FIND_ROCT_INCLUDES hsakmt.h HINTS /opt/rocm/include)
-find_library(FIND_ROCT_LIBRARIES hsakmt HINTS /opt/rocm/lib)
+find_package(amd_comgr REQUIRED CONFIG
+  PATHS
+    /opt/rocm/
+  PATH_SUFFIXES
+    cmake/amd_comgr
+    lib/cmake/amd_comgr)
 
-include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(ROCT DEFAULT_MSG
-                                  FIND_ROCT_INCLUDES FIND_ROCT_LIBRARIES)
-mark_as_advanced(FIND_ROCT_INCLUDES FIND_ROCT_LIBRARIES)
-
-set(ROCT_INCLUDES ${FIND_ROCT_INCLUDES})
-set(ROCT_LIBRARIES ${FIND_ROCT_LIBRARIES})
+target_compile_definitions(rocclr PUBLIC WITH_LIGHTNING_COMPILER USE_COMGR_LIBRARY)
+if(BUILD_SHARED_LIBS)
+  target_compile_definitions(rocclr PUBLIC COMGR_DYN_DLL)
+endif()
+target_link_libraries(rocclr PUBLIC amd_comgr)

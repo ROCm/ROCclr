@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2009 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -76,6 +76,21 @@ class Resource;
 class VirtualDevice;
 class PrintfDbg;
 class IProDevice;
+
+struct ProfilingSignal : public amd::HeapObject {
+  hsa_signal_t  signal_;  //!< HSA signal to track profiling information
+  Timestamp*    ts_;      //!< Timestamp object associated with the signal
+  HwQueueEngine engine_;  //!< Engine used with this signal
+  bool          done_;    //!< True if signal is done
+  amd::Monitor  lock_;    //!< Signal lock for update
+  ProfilingSignal()
+    : ts_(nullptr)
+    , engine_(HwQueueEngine::Compute)
+    , done_(true)
+    , lock_("Signal Ops Lock", true)
+    { signal_.handle = 0; }
+  amd::Monitor& LockSignalOps() { return lock_; }
+};
 
 class Sampler : public device::Sampler {
  public:
@@ -232,7 +247,21 @@ class NullDevice : public amd::Device {
     return true;
   }
 
-  virtual bool SetClockMode(const cl_set_device_clock_mode_input_amd setClockModeInput, cl_set_device_clock_mode_output_amd* pSetClockModeOutput) { return true; }
+  virtual bool SetClockMode(
+      const cl_set_device_clock_mode_input_amd setClockModeInput,
+      cl_set_device_clock_mode_output_amd* pSetClockModeOutput) { return true; }
+
+  virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const { return false; }
+  virtual void ReleaseGlobalSignal(void* signal) const {}
+
+#if defined(__clang__)
+#if __has_feature(address_sanitizer)
+  virtual device::UriLocator* createUriLocator() const {
+    ShouldNotReachHere();
+    return nullptr;
+  }
+#endif
+#endif
 
  protected:
   //! Initialize compiler instance and handle
@@ -400,6 +429,9 @@ class Device : public NullDevice {
   virtual bool SetClockMode(const cl_set_device_clock_mode_input_amd setClockModeInput,
                             cl_set_device_clock_mode_output_amd* pSetClockModeOutput);
 
+  virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const;
+  virtual void ReleaseGlobalSignal(void* signal) const;
+
   //! Allocate host memory in terms of numa policy set by user
   void* hostNumaAlloc(size_t size, size_t alignment, bool atomics = false) const;
 
@@ -499,6 +531,8 @@ class Device : public NullDevice {
 
   virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset);
 
+  ProfilingSignal* GetGlobalSignal(Timestamp* ts) const;
+
  private:
   bool create();
 
@@ -574,6 +608,11 @@ class Device : public NullDevice {
   //! enum for keeping the total and available queue priorities
   enum QueuePriority : uint { Low = 0, Normal = 1, High = 2, Total = 3};
 
+#if defined(__clang__)
+#if __has_feature(address_sanitizer)
+  virtual device::UriLocator* createUriLocator() const;
+#endif
+#endif
 };                                // class roc::Device
 }  // namespace roc
 

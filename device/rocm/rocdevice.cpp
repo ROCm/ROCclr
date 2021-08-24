@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2008 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -44,6 +44,12 @@
 #include "pro/prodriver.hpp"
 #endif
 #include "platform/sampler.hpp"
+
+#if defined(__clang__)
+#if __has_feature(address_sanitizer)
+#include "device/rocm/rocurilocator.hpp"
+#endif
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -1075,6 +1081,7 @@ Memory* Device::getGpuMemory(amd::Memory* mem) const {
   return static_cast<roc::Memory*>(mem->getDeviceMemory(*this));
 }
 
+// ================================================================================================
 bool Device::populateOCLDeviceConstants() {
   info_.available_ = true;
 
@@ -1523,7 +1530,9 @@ bool Device::populateOCLDeviceConstants() {
     info_.cooperativeMultiDeviceGroups_ = settings().enableCoopMultiDeviceGroups_;
 
     // TODO: Update this to use HSA API when it is ready. For now limiting this to gfx9
-    info_.aqlBarrierValue_ = (isa().versionMajor() == 9 && isa().versionMinor() == 0);
+    info_.aqlBarrierValue_ = (isa().versionMajor() == 9 && isa().versionMinor() == 0 &&
+                             (isa().versionStepping() == 0 || isa().versionStepping() == 4 ||
+                              isa().versionStepping() == 8 || isa().versionStepping() == 10));
   }
 
   info_.maxPipePacketSize_ = info_.maxMemAllocSize_;
@@ -1564,14 +1573,23 @@ bool Device::populateOCLDeviceConstants() {
       &info_.hmmCpuMemoryAccessible_)) {
     LogError("HSA_AMD_SYSTEM_INFO_SVM_ACCESSIBLE_BY_DEFAULT query failed.");
   }
-  LogPrintfInfo("HMM support: %d, xnack: %d\n",
-    info_.hmmSupported_, info_.hmmCpuMemoryAccessible_);
+
+  // HMM specific capability for CPU direct access to device memory
+  if (HSA_STATUS_SUCCESS != hsa_agent_get_info(_bkendDevice,
+      static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_SVM_DIRECT_HOST_ACCESS),
+      &info_.hmmDirectHostAccess_)) {
+    LogError("HSA_AMD_AGENT_INFO_SVM_DIRECT_HOST_ACCESS query failed.");
+  }
+
+  LogPrintfInfo("HMM support: %d, xnack: %d, direct host access: %d\n",
+    info_.hmmSupported_, info_.hmmCpuMemoryAccessible_, info_.hmmDirectHostAccess_);
 
   info_.globalCUMask_ = {};
 
   return true;
 }
 
+// ================================================================================================
 device::VirtualDevice* Device::createVirtualDevice(amd::CommandQueue* queue) {
   amd::ScopedLock lock(vgpusAccess());
 
@@ -2231,10 +2249,10 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
 
     switch (advice) {
       case amd::MemoryAdvice::SetReadMostly:
-        attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, true});
+        attr.push_back({HSA_AMD_SVM_ATTRIB_READ_MOSTLY, true});
         break;
       case amd::MemoryAdvice::UnsetReadMostly:
-        attr.push_back({HSA_AMD_SVM_ATTRIB_READ_ONLY, false});
+        attr.push_back({HSA_AMD_SVM_ATTRIB_READ_MOSTLY, false});
         break;
       case amd::MemoryAdvice::SetPreferredLocation:
         if (use_cpu) {
@@ -2258,7 +2276,10 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
             //! @note: HMM should support automatic page table update with xnack enabled,
             //! but currently it doesn't and runtime explicitly enables access from all devices
             for (const auto dev : devices()) {
-              attr.push_back({attrib, static_cast<Device*>(dev)->getBackendDevice().handle});
+              // Skip null devices
+              if (static_cast<Device*>(dev)->getBackendDevice().handle != 0) {
+                attr.push_back({attrib, static_cast<Device*>(dev)->getBackendDevice().handle});
+              }
             }
           } else {
             attr.push_back({attrib, getBackendDevice().handle});
@@ -2270,6 +2291,12 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
         // @note: 0 may cause a failure on old runtimes
         attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE, 0});
         break;
+      case amd::MemoryAdvice::SetCoarseGrain:
+        attr.push_back({HSA_AMD_SVM_ATTRIB_GLOBAL_FLAG, HSA_AMD_SVM_GLOBAL_FLAG_COARSE_GRAINED});
+        break;
+      case amd::MemoryAdvice::UnsetCoarseGrain:
+        attr.push_back({HSA_AMD_SVM_ATTRIB_GLOBAL_FLAG, HSA_AMD_SVM_GLOBAL_FLAG_FINE_GRAINED});
+        break;
       default:
         return false;
       break;
@@ -2278,7 +2305,7 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
     hsa_status_t status = hsa_amd_svm_attributes_set(const_cast<void*>(dev_ptr), count,
                                                     attr.data(), attr.size());
     if (status != HSA_STATUS_SUCCESS) {
-      LogPrintfError("hsa_amd_svm_attributes_set() failed. Advice: %d", advice);
+      LogPrintfError("hsa_amd_svm_attributes_set() failed. Advice: %d, status: %d", advice, status);
       return false;
     }
   } else {
@@ -2511,6 +2538,21 @@ bool Device::SetClockMode(const cl_set_device_clock_mode_input_amd setClockModeI
   return result;
 }
 
+// ================================================================================================
+bool Device::IsHwEventReady(const amd::Event& event, bool wait) const {
+  void* hw_event = (event.NotifyEvent() != nullptr) ?
+    event.NotifyEvent()->HwEvent() : event.HwEvent();
+  if (hw_event == nullptr) {
+    ClPrint(amd::LOG_INFO, amd::LOG_SIG, "No HW event");
+    return false;
+  } else if (wait) {
+    WaitForSignal(reinterpret_cast<ProfilingSignal*>(hw_event)->signal_);
+    return true;
+  }
+  return (hsa_signal_load_relaxed(reinterpret_cast<ProfilingSignal*>(hw_event)->signal_) <= 0);
+}
+
+// ================================================================================================
 static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
   if (status != HSA_STATUS_SUCCESS && status != HSA_STATUS_INFO_BREAK) {
     // Abort on device exceptions.
@@ -2522,6 +2564,7 @@ static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
   }
 }
 
+// ================================================================================================
 hsa_queue_t* Device::getQueueFromPool(const uint qIndex) {
   if (qIndex < QueuePriority::Total && queuePool_[qIndex].size() > 0) {
     typedef decltype(queuePool_)::value_type::const_reference PoolRef;
@@ -2895,6 +2938,7 @@ bool Device::findLinkInfo(const hsa_amd_memory_pool_t& pool,
   return true;
 }
 
+// ================================================================================================
 void Device::getGlobalCUMask(std::string cuMaskStr) {
   if (cuMaskStr.length() != 0) {
     std::string pre = cuMaskStr.substr(0, 2);
@@ -2947,10 +2991,12 @@ void Device::getGlobalCUMask(std::string cuMaskStr) {
   }
 }
 
+// ================================================================================================
 device::Signal* Device::createSignal() const {
   return new roc::Signal();
 }
 
+// ================================================================================================
 amd::Memory* Device::GetArenaMemObj(const void* ptr, size_t& offset) {
   // If arena_mem_obj_ is null, then HMM and Xnack is disabled. Return nullptr.
   if (arena_mem_obj_ == nullptr) {
@@ -2965,5 +3011,46 @@ amd::Memory* Device::GetArenaMemObj(const void* ptr, size_t& offset) {
   return arena_mem_obj_;
 }
 
+// ================================================================================================
+ProfilingSignal* Device::GetGlobalSignal(Timestamp* ts) const {
+  std::unique_ptr<ProfilingSignal> prof_signal(new ProfilingSignal());
+  if (prof_signal != nullptr) {
+    hsa_agent_t agent = getBackendDevice();
+    hsa_agent_t* agents = (settings().system_scope_signal_) ? nullptr : &agent;
+    uint32_t num_agents = (settings().system_scope_signal_) ? 0 : 1;
+
+    if (ts != 0) {
+      // Save HSA signal earlier to make sure the possible callback will have a valid
+      // value for processing
+      prof_signal->ts_ = ts;
+      ts->AddProfilingSignal(prof_signal.get());
+    }
+
+    if (HSA_STATUS_SUCCESS == hsa_signal_create(kInitSignalValueOne,
+                                                num_agents, agents, &prof_signal->signal_)) {
+      return prof_signal.release();
+    }
+  }
+  return nullptr;
+}
+
+// ================================================================================================
+void Device::ReleaseGlobalSignal(void* signal) const {
+  if (signal != nullptr) {
+    ProfilingSignal* prof_signal = reinterpret_cast<ProfilingSignal*>(signal);
+    if (prof_signal->signal_.handle != 0) {
+      hsa_signal_destroy(prof_signal->signal_);
+    }
+    delete prof_signal;
+  }
+}
+
+#if defined(__clang__)
+#if __has_feature(address_sanitizer)
+device::UriLocator* Device::createUriLocator() const {
+  return new roc::UriLocator();
+}
+#endif
+#endif
 } // namespace roc
 #endif  // WITHOUT_HSA_BACKEND

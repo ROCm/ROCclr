@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2009 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -233,8 +233,8 @@ release(uint, HIP_HIDDEN_FREE_MEM, 0,                                         \
         "0 = Disable")                                                        \
 release(size_t, GPU_FORCE_BLIT_COPY_SIZE, 0,                                  \
         "Size in KB of the threshold below which to force blit instead for sdma") \
-release(bool, ROC_ACTIVE_WAIT, false,                                         \
-        "Forces unconditional active wait for GPU")                           \
+release(uint, ROC_ACTIVE_WAIT_TIMEOUT, 50,                                    \
+        "Forces active wait of GPU interrup for the timeout(us)")             \
 release(bool, ROC_ENABLE_LARGE_BAR, true,                                     \
         "Enable Large Bar if supported by the device")                        \
 release(bool, ROC_CPU_WAIT_FOR_SIGNAL, true,                                  \

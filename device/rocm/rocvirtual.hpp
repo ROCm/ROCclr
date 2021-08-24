@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-present Advanced Micro Devices, Inc.
+/* Copyright (c) 2008 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -34,48 +34,49 @@
 namespace roc {
 class Device;
 class Memory;
+struct ProfilingSignal;
 class Timestamp;
-
-struct ProfilingSignal : public amd::HeapObject {
-  hsa_signal_t  signal_;  //!< HSA signal to track profiling information
-  Timestamp*    ts_;      //!< Timestamp object associated with the signal
-  HwQueueEngine engine_;  //!< Engine used with this signal
-  bool          done_;    //!< True if signal is done
-  ProfilingSignal()
-    : ts_(nullptr)
-    , engine_(HwQueueEngine::Compute)
-    , done_(true)
-    { signal_.handle = 0; }
-};
 
 // Initial HSA signal value
 constexpr static hsa_signal_value_t kInitSignalValueOne = 1;
 
 // Timeouts for HSA signal wait
-constexpr static uint64_t kTimeout100us = 100000;
-constexpr static uint64_t kTimeout750us = 750000;
+constexpr static uint64_t kTimeout100us = 100 * K;
 constexpr static uint64_t kUnlimitedWait = std::numeric_limits<uint64_t>::max();
 
-template <uint64_t wait_time = 0>
+template <bool active_wait_timeout = false>
 inline bool WaitForSignal(hsa_signal_t signal) {
-  if (wait_time != 0) {
-    if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                  wait_time, HSA_WAIT_STATE_ACTIVE) != 0) {
-      return false;
-    }
-  } else {
-    uint64_t timeout = (ROC_ACTIVE_WAIT) ? kUnlimitedWait : kTimeout100us;
-
-    // Active wait with a timeout
-    if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                  timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
-      // Wait until the completion with CPU suspend
-      if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
-                                    kUnlimitedWait, HSA_WAIT_STATE_BLOCKED) != 0) {
+  if (hsa_signal_load_relaxed(signal) > 0) {
+    if (active_wait_timeout) {
+      uint64_t timeout = ROC_ACTIVE_WAIT_TIMEOUT * K;
+      if (timeout == 0) {
         return false;
+      }
+      ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Host active wait for Signal = (0x%lx) for %d us",
+              signal.handle, ROC_ACTIVE_WAIT_TIMEOUT);
+
+      if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
+                                    timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
+        return false;
+      }
+    } else {
+
+      uint64_t timeout = kTimeout100us;
+      ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Host wait until Signal = (0x%lx) decremented",
+              signal.handle);
+
+      // Active wait with a timeout
+      if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
+                                    timeout, HSA_WAIT_STATE_ACTIVE) != 0) {
+        // Wait until the completion with CPU suspend
+        if (hsa_signal_wait_scacquire(signal, HSA_SIGNAL_CONDITION_LT, kInitSignalValueOne,
+                                      kUnlimitedWait, HSA_WAIT_STATE_BLOCKED) != 0) {
+          return false;
+        }
       }
     }
   }
+
   return true;
 }
 
@@ -90,7 +91,11 @@ class Timestamp : public amd::HeapObject {
   VirtualGPU* gpu_;               //!< Virtual GPU, associated with this timestamp
   const amd::Command& command_;   //!< Command, associated with this timestamp
   amd::Command* parsedCommand_;   //!< Command down the list, considering command_ as head
-  std::vector<ProfilingSignal*> signals_;
+  std::vector<ProfilingSignal*> signals_; //!< The list of all signals, associated with the TS
+  hsa_signal_t callback_signal_;  //!< Signal associated with a callback for possible later update
+
+  Timestamp(const Timestamp&) = delete;
+  Timestamp& operator=(const Timestamp&) = delete;
 
  public:
   Timestamp(VirtualGPU* gpu, const amd::Command& command)
@@ -98,7 +103,8 @@ class Timestamp : public amd::HeapObject {
     , end_(0)
     , gpu_(gpu)
     , command_(command)
-    , parsedCommand_(nullptr) {}
+    , parsedCommand_(nullptr)
+    , callback_signal_(hsa_signal_t{}) {}
 
   ~Timestamp() {}
 
@@ -125,7 +131,14 @@ class Timestamp : public amd::HeapObject {
   void start() { start_ = amd::Os::timeNanos(); }
 
   // End a timestamp (get timestamp from OS)
-  void end() { end_ = amd::Os::timeNanos(); }
+  void end() {
+    // Timestamp value can be updated by HW profiling if current command had a stall.
+    // Although CPU TS should be still valid in this situation, there are cases in VM mode
+    // when CPU timeline is out of sync with GPU timeline and shifted time can be reported
+    if (end_ == 0) {
+      end_ = amd::Os::timeNanos();
+    }
+  }
 
   static void setGpuTicksToTime(double ticksToTime) { ticksToTime_ = ticksToTime; }
   static double getGpuTicksToTime() { return ticksToTime_; }
@@ -141,6 +154,14 @@ class Timestamp : public amd::HeapObject {
 
   //! Returns virtual GPU device, used with this timestamp
   VirtualGPU* gpu() const { return gpu_; }
+
+  //! Updates the callback signal
+  void SetCallbackSignal(hsa_signal_t callback_signal) {
+    callback_signal_ = callback_signal;
+  }
+
+  //! Returns the callback signal
+  hsa_signal_t GetCallbackSignal() const { return callback_signal_; }
 };
 
 class VirtualGPU : public device::VirtualDevice {
@@ -197,8 +218,6 @@ class VirtualGPU : public device::VirtualDevice {
     //! Wait for the curent active signal. Can idle the queue
     bool WaitCurrent() {
       ProfilingSignal* signal = signal_list_[current_id_];
-      ClPrint(amd::LOG_DEBUG, amd::LOG_MISC, "[%zx]!\t WaitCurret completion_signal=0x%zx",
-        std::this_thread::get_id(), signal->signal_.handle);
       return CpuWaitForSignal(signal);
     }
 
@@ -206,18 +225,18 @@ class VirtualGPU : public device::VirtualDevice {
     void SetActiveEngine(HwQueueEngine engine = HwQueueEngine::Compute) { engine_ = engine; }
 
     //! Returns the last submitted signal for a wait
-    hsa_signal_t* WaitingSignal(HwQueueEngine engine = HwQueueEngine::Compute);
+    std::vector<hsa_signal_t>& WaitingSignal(HwQueueEngine engine = HwQueueEngine::Compute);
 
     //! Resets current signal back to the previous one. It's necessary in a case of ROCr failure.
     void ResetCurrentSignal();
 
-    //! Inserts an external signal(submission in another queue) for dependency tracking
-    void SetExternalSignal(ProfilingSignal* signal) {
-      external_signal_ = signal;
+    //! Adds an external signal(submission in another queue) for dependency tracking
+    void AddExternalSignal(ProfilingSignal* signal) {
+      external_signals_.push_back(signal);
       engine_ = HwQueueEngine::External;
     }
 
-    //! Inserts an external signal(submission in another queue) for dependency tracking
+    //! Get the last active signal on the queue
     ProfilingSignal* GetLastSignal() const { return signal_list_[current_id_]; }
 
   private:
@@ -225,8 +244,6 @@ class VirtualGPU : public device::VirtualDevice {
     void WaitNext() {
       size_t next = (current_id_ + 1) % signal_list_.size();
       ProfilingSignal* signal = signal_list_[next];
-      ClPrint(amd::LOG_DEBUG, amd::LOG_MISC, "[%zx]!\t WaitNext completion_signal=0x%zx",
-        std::this_thread::get_id(), signal->signal_.handle);
       CpuWaitForSignal(signal);
     }
 
@@ -235,10 +252,11 @@ class VirtualGPU : public device::VirtualDevice {
 
     HwQueueEngine engine_ = HwQueueEngine::Unknown; //!< Engine used in the current operations
     std::vector<ProfilingSignal*> signal_list_;     //!< The pool of all signals for processing
-    ProfilingSignal*  external_signal_ = nullptr;   //!< Dependency on external signal
     size_t current_id_ = 0;       //!< Last submitted signal
     bool sdma_profiling_ = false; //!< If TRUE, then SDMA profiling is enabled
     const VirtualGPU& gpu_;       //!< VirtualGPU, associated with this tracker
+    std::vector<ProfilingSignal*> external_signals_;  //!< External signals for a wait in this queue
+    std::vector<hsa_signal_t> waiting_signals_;   //!< Current waiting signals in this queue
   };
 
   VirtualGPU(Device& device, bool profiling = false, bool cooperative = false,
@@ -354,9 +372,12 @@ class VirtualGPU : public device::VirtualDevice {
 
   void profilerAttach(bool enable = false) { profilerAttached_ = enable; }
 
-  bool isProfilerAttached() { return profilerAttached_; }
+  bool isProfilerAttached() const { return profilerAttached_; }
   // } roc OpenCL integration
  private:
+  //! Dispatches a barrier with blocking HSA signals
+  void dispatchBlockingWait();
+
   bool dispatchAqlPacket(hsa_kernel_dispatch_packet_t* packet, uint16_t header,
                          uint16_t rest, bool blocking = true);
   bool dispatchAqlPacket(hsa_barrier_and_packet_t* packet, uint16_t header,
@@ -364,8 +385,8 @@ class VirtualGPU : public device::VirtualDevice {
   template <typename AqlPacket> bool dispatchGenericAqlPacket(AqlPacket* packet, uint16_t header,
                                                               uint16_t rest, bool blocking,
                                                               size_t size = 1);
-  void dispatchBarrierPacket(hsa_barrier_and_packet_t* packet, uint16_t packetHeader,
-                             bool skipSignal = false);
+  void dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal = false,
+                             const ProfilingSignal* global_signal = nullptr);
   bool dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet, const uint32_t gfxVersion,
                                 bool blocking, const hsa_ven_amd_aqlprofile_1_00_pfn_t* extApi);
   void dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t* packet,
