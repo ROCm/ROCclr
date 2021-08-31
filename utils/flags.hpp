@@ -261,7 +261,9 @@ release(cstring, AMD_LOG_LEVEL_FILE, "",                                      \
 release(size_t, PAL_PREPINNED_MEMORY_SIZE, 64,                                \
         "Size in KBytes of prepinned memory")                                 \
 release(bool, AMD_CPU_AFFINITY, false,                                        \
-        "Reset CPU affinity of any runtime threads")
+        "Reset CPU affinity of any runtime threads")                          \
+release(bool, GPU_STREAMOPS_CP_WAIT, false,                                   \
+        "Force the stream wait memory operation to wait on CP.")
 
 namespace amd {
 
