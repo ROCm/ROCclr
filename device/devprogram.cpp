@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <sstream>
 #include <cstdio>
@@ -532,7 +533,9 @@ bool Program::compileAndLinkExecutable(const amd_comgr_data_set_t inputs,
   if (status == AMD_COMGR_STATUS_SUCCESS) {
     hasOutput = true;
 
-    if (amdOptions->isDumpFlagSet(amd::option::DUMP_ISA)){
+    if ((amdOptions->isDumpFlagSet(amd::option::DUMP_ISA)) ||
+        (isHIP() &&
+         amdOptions->origOptionStr.find("-save-temps") != std::string::npos)) {
       //  create the assembly data set
       amd_comgr_data_set_t assemblyData;
       bool hasAssemblyData = false;
@@ -602,6 +605,17 @@ bool Program::compileAndLinkExecutable(const amd_comgr_data_set_t inputs,
   return (status == AMD_COMGR_STATUS_SUCCESS);
 }
 #endif  // defined(USE_COMGR_LIBRARY)
+
+static std::size_t getOCLSourceHash(const std::string& sourceCode) {
+  return std::hash<std::string>()(sourceCode);
+}
+
+static std::size_t getOCLOptionsHash(const amd::option::Options &options) {
+  std::string opts;
+  for (const std::string& S : options.clangOptions)
+    opts.append(S);
+  return std::hash<std::string>()(opts);
+}
 
 bool Program::compileImplLC(const std::string& sourceCode,
                             const std::vector<const std::string*>& headers,
@@ -703,9 +717,15 @@ bool Program::compileImplLC(const std::string& sourceCode,
 
     std::ofstream f(options->getDumpFileName(".cl").c_str(), std::ios::trunc);
     if (f.is_open()) {
+      auto srcHash = getOCLSourceHash(sourceCode);
+      auto optHash = getOCLOptionsHash(*options);
+
       f << "/* Compiler options:\n"
            "-c -emit-llvm -target amdgcn-amd-amdhsa -x cl "
         << driverOptionsOStrStr.str() << " -include opencl-c.h "
+        << "\nHash to override:"
+        << "\n  Source: 0x" << std::setbase(16) << srcHash
+        << "\n  Source + clang options: 0x" << (srcHash ^ optHash)
         << "\n*/\n\n"
         << sourceCode;
       f.close();
@@ -744,7 +764,7 @@ bool Program::compileImplLC(const std::string& sourceCode,
     }
   }
   else {
-    buildLog_ += "Error: Failed to compile opencl source (from CL or HIP source to LLVM IR).\n";
+    buildLog_ += "Error: Failed to compile source (from CL or HIP source to LLVM IR).\n";
   }
 
   amd::Comgr::destroy_data_set(inputs);
@@ -1662,9 +1682,89 @@ int32_t Program::link(const std::vector<Program*>& inputPrograms, const char* or
 }
 
 // ================================================================================================
+static std::pair<std::string, size_t>
+getSubstBinFileName(const char *SubstCfgFile, size_t srcHash, size_t optHash) {
+  using namespace std;
+  const size_t srcAndOptHash = srcHash ^ optHash;
+  ifstream cfgFile(SubstCfgFile);
+  if (cfgFile.good()) {
+    string line;
+    while(getline(cfgFile, line)) {
+      istringstream ss(line);
+      size_t hash;
+      ss >> setbase(16) >> hash;
+      if (ss.fail() || !isspace(ss.peek()))
+        continue;
+
+      if (hash == srcAndOptHash || hash == srcHash) {
+        ss >> ws;
+        string objFileName;
+        getline(ss, objFileName); // get the rest of line with spaces
+        return make_pair(objFileName, hash);
+      }
+    }
+  } else
+    return make_pair(string(), (size_t)1);
+  return make_pair(string(), (size_t)0);
+}
+
+bool Program::trySubstObjFile(const char *SubstCfgFile,
+                              const std::string& sourceCode,
+                              const amd::option::Options* options) {
+  std::string buffer;
+  std::ostringstream str(buffer);
+
+  size_t srcHash = getOCLSourceHash(sourceCode);
+  size_t optHash = getOCLOptionsHash(*options);
+  auto substRes  = getSubstBinFileName(SubstCfgFile, srcHash, optHash);
+  if (substRes.first.empty()) {
+    switch(substRes.second) {
+    default: break;
+    case 1:
+      str << "Subst failure: cannot open config file " << SubstCfgFile << std::endl;
+    break;
+    }
+    buildLog_ += str.str();
+    return false;
+  }
+
+  uint8_t *binary = nullptr;
+  size_t binSize = 0;
+  std::ifstream binFile(substRes.first, std::ios::binary | std::ios::ate);
+  if (binFile.good()) {
+    binSize = binFile.tellg();
+    binFile.seekg(0, std::ios::beg);
+    binary = new (std::nothrow) uint8_t[binSize];
+    if (binary && !binFile.read(reinterpret_cast<char*>(binary), binSize)) {
+      delete[] binary;
+      binary = nullptr;
+    }
+  }
+
+  if (!binary) {
+    buildStatus_ = CL_BUILD_ERROR;
+    buildError_ = CL_BUILD_PROGRAM_FAILURE;
+    str << "Subst failure: cannot read binary file " << substRes.first << '\n';
+  } else {
+    setKernels(binary, binSize);
+    buildStatus_ = CL_BUILD_SUCCESS;
+    buildError_ = 0;
+    str << "Substituted program hash 0x"
+        << std::setbase(16) << substRes.second
+        << " with " << substRes.first << '\n';
+  }
+  buildLog_ += str.str();
+  return true;
+}
+
 int32_t Program::build(const std::string& sourceCode, const char* origOptions,
                        amd::option::Options* options,
                        const std::vector<std::string>& preCompiledHeaders) {
+  if (AMD_OCL_SUBST_OBJFILE != NULL &&
+      trySubstObjFile(AMD_OCL_SUBST_OBJFILE, sourceCode, options)) {
+    return buildError();
+  }
+
   uint64_t start_time = 0;
   if (options->oVariables->EnableBuildTiming) {
     buildLog_ = "\nStart timing major build components.....\n\n";
@@ -2436,9 +2536,73 @@ Program::file_type_t Program::getNextCompilationStageFromBinary(amd::option::Opt
 
 // ================================================================================================
 #if defined(USE_COMGR_LIBRARY)
-bool Program::createKernelMetadataMap() {
+bool ComgrBinaryData::create(amd_comgr_data_kind_t kind, void* binary, size_t binSize) {
+  amd_comgr_status_t status = amd::Comgr::create_data(kind, &binaryData_);
+  if (status != AMD_COMGR_STATUS_SUCCESS) {
+    return false;
+  }
+  created_ = true;
+
+  status = amd::Comgr::set_data(binaryData_, binSize, reinterpret_cast<const char*>(binary));
+  if (status != AMD_COMGR_STATUS_SUCCESS) {
+    return false;
+  }
+
+  return true;
+}
+
+amd_comgr_data_t& ComgrBinaryData::data() {
+  assert(created_);
+  return binaryData_;
+}
+
+ComgrBinaryData::~ComgrBinaryData() {
+  if (created_) {
+    amd::Comgr::release_data(binaryData_);
+  }
+}
+
+bool Program::createKernelMetadataMap(void* binary, size_t binSize) {
+
+  ComgrBinaryData binaryData;
+  if (!binaryData.create(AMD_COMGR_DATA_KIND_EXECUTABLE, binary, binSize)) {
+    buildLog_ += "Error: COMGR failed to create code object data object.\n";
+    return false;
+  }
 
   amd_comgr_status_t status;
+  size_t requiredSize = 0;
+  status = amd::Comgr::get_data_isa_name(binaryData.data(), &requiredSize, nullptr);
+  if (status != AMD_COMGR_STATUS_SUCCESS) {
+    buildLog_ += "Error: COMGR failed to get code object ISA name.\n";
+    return false;
+  }
+
+  std::vector<char> binaryIsaName(requiredSize);
+  status = amd::Comgr::get_data_isa_name(binaryData.data(), &requiredSize, binaryIsaName.data());
+  if ((status != AMD_COMGR_STATUS_SUCCESS) || (requiredSize != binaryIsaName.size())) {
+    buildLog_ += "Error: COMGR failed to get code object ISA name.\n";
+    return false;
+  }
+
+  const amd::Isa *binaryIsa = amd::Isa::findIsa(binaryIsaName.data());
+  if (!binaryIsa) {
+    buildLog_ += "Error: Could not find the program ISA " + std::string(binaryIsaName.data());
+    return false;
+  }
+
+  if (!amd::Isa::isCompatible(*binaryIsa, device().isa())) {
+    buildLog_ += "Error: The program ISA " + std::string(binaryIsaName.data());
+    buildLog_ += " is not compatible with the device ISA " + device().isa().isaName();
+    return false;
+  }
+
+  status = amd::Comgr::get_data_metadata(binaryData.data(), &metadata_);
+  if (status != AMD_COMGR_STATUS_SUCCESS) {
+    buildLog_ += "Error: COMGR failed to get the metadata.\n";
+    return false;
+  }
+
   amd_comgr_metadata_node_t kernelsMD;
   bool hasKernelMD = false;
   size_t size = 0;
@@ -2589,62 +2753,14 @@ bool Program::FindGlobalVarSize(void* binary, size_t binSize) {
   }
 
   auto numpHdrs = elfIn.getSegmentNum();
-  bool metadata_found = false;
   for (unsigned int i = 0; i < numpHdrs; ++i) {
     amd::ELFIO::segment* seg = nullptr;
     if (!elfIn.getSegment(i, seg)) {
       continue;
     }
-    // Look for the runtime metadata note
-    if (seg->get_type() == PT_NOTE && seg->get_align() >= sizeof(int)) {
-      // Iterate over the notes in this segment
-      address ptr = (address)binary + seg->get_offset();
-      address segmentEnd = ptr + seg->get_file_size();
 
-      while (ptr < segmentEnd) {
-        // see spec of note:
-        // https://docs.oracle.com/cd/E19683-01/816-1386/6m7qcoblj/index.html#chapter6-18048
-        auto note = reinterpret_cast<amd::Elf::ElfNote*>(ptr);
-        address name = reinterpret_cast<address>(&note[1]);
-        address desc = name + amd::alignUp(note->n_namesz, sizeof(int));
-
-        if (note->n_type == 7 ||
-            note->n_type == 8) {
-          buildLog_ += "Error: object code with old metadata is not supported\n";
-          return false;
-        }
-        else if ((note->n_type == 10 /* NT_AMD_AMDGPU_HSA_METADATA V2 */ &&
-                  note->n_namesz == sizeof "AMD" && !memcmp(name, "AMD", note->n_namesz)) ||
-                (note->n_type == 32 /* NT_AMD_AMDGPU_HSA_METADATA V3 */ &&
-                  note->n_namesz == sizeof "AMDGPU" && !memcmp(name, "AMDGPU", note->n_namesz))) {
-          amd_comgr_status_t status;
-          amd_comgr_data_t binaryData;
-
-          status  = amd::Comgr::create_data(AMD_COMGR_DATA_KIND_EXECUTABLE, &binaryData);
-          if (status == AMD_COMGR_STATUS_SUCCESS) {
-            status = amd::Comgr::set_data(binaryData, binSize,
-                                          reinterpret_cast<const char*>(binary));
-          }
-
-          if (status == AMD_COMGR_STATUS_SUCCESS) {
-            status = amd::Comgr::get_data_metadata(binaryData, &metadata_);
-          }
-
-          amd::Comgr::release_data(binaryData);
-
-          if (status != AMD_COMGR_STATUS_SUCCESS) {
-            buildLog_ += "Error: COMGR fails to get the metadata.\n";
-            return false;
-          }
-          metadata_found = true;
-          break;
-        }
-        ptr += sizeof(*note) + amd::alignUp(note->n_namesz, sizeof(int)) +
-          amd::alignUp(note->n_descsz, sizeof(int));
-      }
-    }
     // Accumulate the size of R & !X loadable segments
-    else if (seg->get_type() == PT_LOAD && !(seg->get_flags() & PF_X)) {
+    if (seg->get_type() == PT_LOAD && !(seg->get_flags() & PF_X)) {
       if (seg->get_flags() & PF_R) {
         progvarsTotalSize += seg->get_memory_size();
       }
@@ -2657,12 +2773,7 @@ bool Program::FindGlobalVarSize(void* binary, size_t binSize) {
     }
   }
 
-  if (!metadata_found) {
-    buildLog_ += "Error: runtime metadata section not present in ELF program binary\n";
-    return false;
-  }
-
-  if (!createKernelMetadataMap()) {
+  if (!createKernelMetadataMap(binary, binSize)) {
     buildLog_ += "Error: create kernel metadata map using COMgr\n";
     return false;
   }

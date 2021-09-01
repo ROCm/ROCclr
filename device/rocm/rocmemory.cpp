@@ -712,7 +712,8 @@ bool Buffer::create() {
   // Allocate backing storage in device local memory unless UHP or AHP are set
   cl_mem_flags memFlags = owner()->getMemFlags();
 
-  if (owner()->getSvmPtr() != nullptr) {
+  if ((owner()->parent() == nullptr) &&
+      (owner()->getSvmPtr() != nullptr)) {
     if (dev().forceFineGrain(owner()) || dev().isFineGrainedSystem(true)) {
       memFlags |= CL_MEM_SVM_FINE_GRAIN_BUFFER;
     }
@@ -909,6 +910,8 @@ bool Buffer::create() {
                                         dev().SystemCoarseSegment() : dev().SystemSegment());
       hsa_status_t status = hsa_amd_memory_lock_to_pool(owner()->getHostMem(),
           owner()->getSize(), nullptr, 0, pool, 0, &deviceMemory_);
+      ClPrint(amd::LOG_DEBUG, amd::LOG_MEM, "Locking to pool %p, size 0x%zx, HostPtr = %p,"
+              " DevPtr = %p", pool, owner()->getSize(), owner()->getHostMem(), deviceMemory_ );
       if (status != HSA_STATUS_SUCCESS) {
         DevLogPrintfError("Failed to lock memory to pool, failed with hsa_status: %d \n", status);
         deviceMemory_ = nullptr;

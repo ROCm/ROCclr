@@ -663,11 +663,10 @@ bool VirtualGPU::processMemObjects(const amd::Kernel& kernel, const_address para
 
           const void* globalAddress = *reinterpret_cast<const void* const*>(params + desc.offset_);
           ClPrint(amd::LOG_INFO, amd::LOG_KERN,
-            "!\targ%d: %s %s = ptr:%p obj:[%p-%p] threadId : %zx",
-            index, desc.typeName_.c_str(), desc.name_.c_str(),
+            "[%zx]!\tArg%d: %s %s = ptr:%p obj:[%p-%p]",
+            std::this_thread::get_id(), i, desc.typeName_.c_str(), desc.name_.c_str(),
             globalAddress, gpuMem->getDeviceMemory(),
-            reinterpret_cast<address>(gpuMem->getDeviceMemory()) + mem->getSize(),
-            std::this_thread::get_id());
+            reinterpret_cast<address>(gpuMem->getDeviceMemory()) + mem->getSize());
 
           // Validate memory for a dependency in the queue
           memoryDependency().validate(*this, gpuMem, (desc.info_.readOnly_ == 1));
@@ -732,8 +731,8 @@ bool VirtualGPU::processMemObjects(const amd::Kernel& kernel, const_address para
       WriteAqlArgAt(const_cast<address>(params), &vqVA, sizeof(vqVA), desc.offset_);
     }
     else if (desc.type_ == T_VOID) {
+      const_address srcArgPtr = params + desc.offset_;
       if (desc.info_.oclObject_ == amd::KernelParameterDescriptor::ReferenceObject) {
-        const_address srcArgPtr = params + desc.offset_;
         void* mem = allocKernArg(desc.size_, 128);
         if (mem == nullptr) {
           LogError("Out of memory");
@@ -743,6 +742,10 @@ bool VirtualGPU::processMemObjects(const amd::Kernel& kernel, const_address para
         const auto it = hsaKernel.patch().find(desc.offset_);
         WriteAqlArgAt(const_cast<address>(params), &mem, sizeof(void*), it->second);
       }
+      ClPrint(amd::LOG_INFO, amd::LOG_KERN,
+        "[%zx]!\tArg%d: %s %s = val:%lld",
+        std::this_thread::get_id(), i, desc.typeName_.c_str(), desc.name_.c_str(),
+        *reinterpret_cast<const long long*>(srcArgPtr));
     }
     else if (desc.type_ == T_SAMPLER) {
       uint32_t index = desc.info_.arrayIndex_;
@@ -2147,7 +2150,7 @@ void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& cmd) {
 
 bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const void* pattern,
                             size_t patternSize, const amd::Coord3D& origin,
-                            const amd::Coord3D& size) {
+                            const amd::Coord3D& size, bool forceBlit) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
 
@@ -2185,7 +2188,7 @@ bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const 
         pattern = fillValue;
         patternSize = elemSize;
       }
-      result = blitMgr().fillBuffer(*memory, pattern, patternSize, realOrigin, realSize, entire);
+      result = blitMgr().fillBuffer(*memory, pattern, patternSize, realOrigin, realSize, entire, forceBlit);
       break;
     }
     case CL_COMMAND_FILL_IMAGE: {
@@ -2307,18 +2310,14 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
   } else if (type == ROCCLR_COMMAND_STREAM_WRITE_VALUE) {
     amd::Coord3D origin(offset);
     amd::Coord3D size(sizeBytes);
-    bool entire = amdMemory->isEntirelyCovered(origin, size);
 
     // Ensure memory ordering preceding the write
     dispatchBarrierPacket(kBarrierPacketReleaseHeader);
 
-    // Use GPU Blit to write
-    bool result = blitMgr().fillBuffer(*memory, &value, sizeBytes, origin, size, entire, true);
-    ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Writting value: 0x%lx", value);
-
-    if (!result) {
-      LogError("submitStreamOperation: Write failed!");
+    if (!fillMemory(CL_COMMAND_FILL_BUFFER, amdMemory, &value, sizeBytes, origin, size, true)) {
+      cmd.setStatus(CL_INVALID_OPERATION);
     }
+    ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Writing value: 0x%lx", value);
   } else {
     ShouldNotReachHere();
   }
@@ -2348,16 +2347,10 @@ void VirtualGPU::submitSvmFillMemory(amd::SvmFillMemoryCommand& cmd) {
     amd::Coord3D size(fillSize, 1, 1);
 
     assert((dstMemory->validateRegion(origin, size)) && "The incorrect fill size!");
-    // Synchronize memory from host if necessary
-    device::Memory::SyncFlags syncFlags;
-    syncFlags.skipEntire_ = dstMemory->isEntirelyCovered(origin, size);
-    memory->syncCacheFromHost(*this, syncFlags);
 
-    if (!fillMemory(cmd.type(), dstMemory, cmd.pattern(), cmd.patternSize(), origin, size)) {
+    if (!fillMemory(cmd.type(), dstMemory, cmd.pattern(), cmd.patternSize(), origin, size, true)) {
       cmd.setStatus(CL_INVALID_OPERATION);
     }
-    // Mark this as the most-recently written cache of the destination
-    dstMemory->signalWrite(&dev());
   } else {
     // Stall GPU for CPU access to memory
     releaseGpuMemoryFence();
