@@ -44,7 +44,8 @@
 #include "platform/activity.hpp"
 #include "platform/command_utils.hpp"
 
-#include "CL/cl_ext.h"
+#include <CL/cl_ext.h>
+#include <CL/cl_gl.h>
 
 #include <algorithm>
 #include <atomic>
