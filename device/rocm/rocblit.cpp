@@ -456,9 +456,8 @@ bool DmaBlitManager::copyBufferRect(device::Memory& srcMemory, device::Memory& d
 
       // Copy memory line by line
       ClPrint(amd::LOG_DEBUG, amd::LOG_COPY,
-              "[%zx]!\t HSA Asycn Copy Rect  wait_event=0x%zx, completion_signal=0x%zx",
-              std::this_thread::get_id(), (wait_events.size() != 0) ? wait_events[0].handle : 0,
-              active.handle);
+              "HSA Asycn Copy Rect  wait_event=0x%zx, completion_signal=0x%zx",
+              (wait_events.size() != 0) ? wait_events[0].handle : 0, active.handle);
       hsa_status_t status = hsa_amd_memory_async_copy_rect(&dstMem, &offset,
           &srcMem, &offset, &dim, agent, direction, wait_events.size(), &wait_events[0], active);
       if (status != HSA_STATUS_SUCCESS) {
@@ -478,9 +477,8 @@ bool DmaBlitManager::copyBufferRect(device::Memory& srcMemory, device::Memory& d
 
           // Copy memory line by line
           ClPrint(amd::LOG_DEBUG, amd::LOG_COPY,
-                  "[%zx]!\t HSA Asycn Copy wait_event=0x%zx, completion_signal=0x%zx",
-                  std::this_thread::get_id(), (wait_events.size() != 0) ? wait_events[0].handle : 0,
-                  active.handle);
+                  "HSA Asycn Copy wait_event=0x%zx, completion_signal=0x%zx",
+                  (wait_events.size() != 0) ? wait_events[0].handle : 0, active.handle);
           hsa_status_t status = hsa_amd_memory_async_copy(
               (reinterpret_cast<address>(dst) + dstOffset), dstAgent,
               (reinterpret_cast<const_address>(src) + srcOffset), srcAgent,
@@ -666,9 +664,8 @@ bool DmaBlitManager::hsaCopy(const Memory& srcMemory, const Memory& dstMemory,
 
   // Use SDMA to transfer the data
   ClPrint(amd::LOG_DEBUG, amd::LOG_COPY,
-          "[%zx]!\t HSA Asycn Copy wait_event=0x%zx, completion_signal=0x%zx",
-          std::this_thread::get_id(), (wait_events.size() != 0) ? wait_events[0].handle : 0,
-          active.handle);
+          "HSA Asycn Copy wait_event=0x%zx, completion_signal=0x%zx",
+          (wait_events.size() != 0) ? wait_events[0].handle : 0, active.handle);
 
   status = hsa_amd_memory_async_copy(dst, dstAgent, src, srcAgent,
       size[0], wait_events.size(), &wait_events[0], active);
@@ -724,8 +721,7 @@ bool DmaBlitManager::hsaCopyStaged(const_address hostSrc, address hostDst, size_
 
       memcpy(hsaBuffer, hostSrc + offset, size);
       ClPrint(amd::LOG_DEBUG, amd::LOG_COPY,
-              "[%zx]!\t HSA Async Copy completion_signal=0x%zx",
-              std::this_thread::get_id(), active.handle);
+              "HSA Async Copy completion_signal=0x%zx", active.handle);
       status = hsa_amd_memory_async_copy(hostDst + offset, dev().getBackendDevice(), hsaBuffer,
                                          srcAgent, size, 0, nullptr, active);
       if (status != HSA_STATUS_SUCCESS) {
@@ -754,8 +750,7 @@ bool DmaBlitManager::hsaCopyStaged(const_address hostSrc, address hostDst, size_
 
     // Copy data from Device to Host
     ClPrint(amd::LOG_DEBUG, amd::LOG_COPY,
-            "[%zx]!\t HSA Async Copy completion_signal=0x%zx",
-            std::this_thread::get_id(), active.handle);
+            "HSA Async Copy completion_signal=0x%zx", active.handle);
     status = hsa_amd_memory_async_copy(hsaBuffer, dstAgent, hostSrc + offset,
         dev().getBackendDevice(), size, 0, nullptr, active);
     if (status == HSA_STATUS_SUCCESS) {
@@ -1943,21 +1938,40 @@ bool KernelBlitManager::fillBuffer(device::Memory& memory, const void* pattern, 
     synchronize();
     return result;
   } else {
-    uint fillType = FillBuffer;
+    uint fillType = FillBufferAligned;
     size_t globalWorkOffset[3] = {0, 0, 0};
     uint64_t fillSize = size[0] / patternSize;
     size_t globalWorkSize = amd::alignUp(fillSize, 256);
     size_t localWorkSize = 256;
-    bool dwordAligned = ((patternSize % sizeof(uint32_t)) == 0) ? true : false;
+    uint32_t alignment = (patternSize & 0x7) == 0 ?
+                          sizeof(uint64_t) :
+                          (patternSize & 0x3) == 0 ?
+                          sizeof(uint32_t) :
+                          (patternSize & 0x1) == 0 ?
+                          sizeof(uint16_t) : sizeof(uint8_t);
 
     // Program kernels arguments for the fill operation
     cl_mem mem = as_cl<amd::Memory>(memory.owner());
-    if (dwordAligned) {
+    if (alignment == sizeof(uint64_t)) {
+      setArgument(kernels_[fillType], 0, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 1, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 2, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 3, sizeof(cl_mem), &mem);
+    } else if (alignment == sizeof(uint32_t)) {
+      setArgument(kernels_[fillType], 0, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 1, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 2, sizeof(cl_mem), &mem);
+      setArgument(kernels_[fillType], 3, sizeof(cl_mem), nullptr);
+    } else if (alignment == sizeof(uint16_t)) {
       setArgument(kernels_[fillType], 0, sizeof(cl_mem), nullptr);
       setArgument(kernels_[fillType], 1, sizeof(cl_mem), &mem);
+      setArgument(kernels_[fillType], 2, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 3, sizeof(cl_mem), nullptr);
     } else {
       setArgument(kernels_[fillType], 0, sizeof(cl_mem), &mem);
       setArgument(kernels_[fillType], 1, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 2, sizeof(cl_mem), nullptr);
+      setArgument(kernels_[fillType], 3, sizeof(cl_mem), nullptr);
     }
     Memory* gpuCB = dev().getRocMemory(constantBuffer_);
     if (gpuCB == nullptr) {
@@ -1969,15 +1983,15 @@ bool KernelBlitManager::fillBuffer(device::Memory& memory, const void* pattern, 
     memcpy(constBuf, pattern, patternSize);
 
     mem = as_cl<amd::Memory>(gpuCB->owner());
-    setArgument(kernels_[fillType], 2, sizeof(cl_mem), &mem, constBufOffset);
+    setArgument(kernels_[fillType], 4, sizeof(cl_mem), &mem, constBufOffset);
     uint64_t offset = origin[0];
-    if (dwordAligned) {
-      patternSize /= sizeof(uint32_t);
-      offset /= sizeof(uint32_t);
-    }
-    setArgument(kernels_[fillType], 3, sizeof(uint32_t), &patternSize);
-    setArgument(kernels_[fillType], 4, sizeof(offset), &offset);
-    setArgument(kernels_[fillType], 5, sizeof(fillSize), &fillSize);
+
+    patternSize/= alignment;
+    offset /= alignment;
+
+    setArgument(kernels_[fillType], 5, sizeof(uint32_t), &patternSize);
+    setArgument(kernels_[fillType], 6, sizeof(offset), &offset);
+    setArgument(kernels_[fillType], 7, sizeof(fillSize), &fillSize);
 
     // Create ND range object for the kernel's execution
     amd::NDRangeContainer ndrange(1, globalWorkOffset, &globalWorkSize, &localWorkSize);
