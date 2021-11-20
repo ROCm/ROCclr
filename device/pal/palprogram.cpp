@@ -226,9 +226,9 @@ HSAILProgram::~HSAILProgram() {
   if (executable_) {
     loader_->DestroyExecutable(executable_);
   }
-  if (kernels_) {
-    delete kernels_;
-  }
+
+  delete kernels_;
+
   if (loader_) {
     amd::hsa::loader::Loader::Destroy(loader_);
   }
@@ -282,16 +282,14 @@ bool HSAILProgram::createKernels(void* binary, size_t binSize, bool useUniformWo
     return false;
   }
   if (kernelNamesSize > 0) {
-    char* kernelNames = new char[kernelNamesSize];
+    std::vector<char> kernelNames(kernelNamesSize);
     errorCode = amd::Hsail::QueryInfo(palNullDevice().compiler(), binaryElf_, RT_KERNEL_NAMES,
-      nullptr, kernelNames, &kernelNamesSize);
+      nullptr, kernelNames.data(), &kernelNamesSize);
     if (errorCode != ACL_SUCCESS) {
       buildLog_ += "Error: Querying of kernel names from the binary failed.\n";
-      delete[] kernelNames;
       return false;
     }
-    std::vector<std::string> vKernels = splitSpaceSeparatedString(kernelNames);
-    delete[] kernelNames;
+    std::vector<std::string> vKernels = splitSpaceSeparatedString(kernelNames.data());
     for (const auto& it : vKernels) {
       std::string kernelName(it);
 
@@ -802,6 +800,12 @@ bool LightningProgram::setKernels(void* binary, size_t binSize,
 #if defined(USE_COMGR_LIBRARY)
   if (!device().isOnline()) {
     return true;
+  }
+
+  // Collect the information about compiled binary
+  if (palDevice().rgpCaptureMgr() != nullptr) {
+    apiHash_ = palDevice().rgpCaptureMgr()->AddElfBinary(binary, binSize, binary, binSize,
+                                                         codeSegGpu_->iMem(), codeSegGpu_->offset());
   }
 
   for (auto& kit : kernels()) {

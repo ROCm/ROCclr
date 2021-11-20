@@ -733,10 +733,6 @@ bool VirtualGPU::processMemObjects(const amd::Kernel& kernel, const_address para
       const_address srcArgPtr = params + desc.offset_;
       if (desc.info_.oclObject_ == amd::KernelParameterDescriptor::ReferenceObject) {
         void* mem = allocKernArg(desc.size_, 128);
-        if (mem == nullptr) {
-          LogError("Out of memory");
-          return false;
-        }
         memcpy(mem, srcArgPtr, desc.size_);
         const auto it = hsaKernel.patch().find(desc.offset_);
         WriteAqlArgAt(const_cast<address>(params), &mem, sizeof(void*), it->second);
@@ -779,6 +775,8 @@ bool VirtualGPU::dispatchGenericAqlPacket(
   AqlPacket* packet, uint16_t header, uint16_t rest, bool blocking, size_t size) {
   const uint32_t queueSize = gpu_queue_->size;
   const uint32_t queueMask = queueSize - 1;
+  // @note: Reserve extra slot for HW processing. There is unknown race condition in some apps.
+  const uint32_t sw_queue_size = queueMask - 1;
 
   // Check for queue full and wait if needed.
   uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, size);
@@ -792,12 +790,12 @@ bool VirtualGPU::dispatchGenericAqlPacket(
   }
 
   // Make sure the slot is free for usage
-  while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= queueMask) {
+  while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= sw_queue_size) {
     amd::Os::yield();
   }
 
   // Add blocking command if the original value of read index was behind of the queue size
-  if (blocking || (index - read) >= queueMask) {
+  if (blocking || (index - read) >= sw_queue_size) {
     if (packet->completion_signal.handle == 0) {
       packet->completion_signal = Barriers().ActiveSignal();
     }
@@ -844,8 +842,10 @@ bool VirtualGPU::dispatchGenericAqlPacket(
 
   // Wait on signal ?
   if (blocking) {
+    LogInfo("Runtime reachead the AQL queue limit. SW is much ahead of HW. Blocking AQL queue!");
     if (!Barriers().WaitCurrent()) {
-      LogPrintfError("Failed blocking queue wait with signal [0x%lx]", packet->completion_signal.handle);
+      LogPrintfError("Failed blocking queue wait with signal [0x%lx]",
+                     packet->completion_signal.handle);
       return false;
     }
   }
@@ -912,7 +912,8 @@ bool VirtualGPU::dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet,
 }
 
 // ================================================================================================
-void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal) {
+void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
+                                       hsa_signal_t signal) {
   const uint32_t queueSize = gpu_queue_->size;
   const uint32_t queueMask = queueSize - 1;
 
@@ -932,7 +933,6 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal) {
 
   uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, 1);
   uint64_t read = hsa_queue_load_read_index_relaxed(gpu_queue_);
-  barrier_packet_.completion_signal.handle = 0;
 
   if (!skipSignal) {
     // Pool size must grow to the size of pending AQL packets
@@ -941,6 +941,9 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal) {
     // Get active signal for current dispatch if profiling is necessary
     barrier_packet_.completion_signal =
       Barriers().ActiveSignal(kInitSignalValueOne, timestamp_, pool_size);
+  } else {
+    // Attach external signal to the packet
+    barrier_packet_.completion_signal = signal;
   }
 
   while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= queueMask);
@@ -1020,6 +1023,7 @@ VirtualGPU::VirtualGPU(Device& device, bool profiling, bool cooperative,
       schedulerQueue_(nullptr),
       schedulerSignal_({0}),
       barriers_(*this),
+      kernarg_pool_signal_(KernelArgPoolNumSignal),
       cuMask_(cuMask),
       priority_(priority),
       copy_command_type_(0)
@@ -1086,10 +1090,8 @@ VirtualGPU::~VirtualGPU() {
     timestamp_ = nullptr;
     LogError("There was a timestamp that was not used; deleting.");
   }
-  if (printfdbg_ != nullptr) {
-    delete printfdbg_;
-    printfdbg_ = nullptr;
-  }
+
+  delete printfdbg_;
 
   if (0 != schedulerSignal_.handle) {
     hsa_signal_destroy(schedulerSignal_);
@@ -1121,9 +1123,10 @@ VirtualGPU::~VirtualGPU() {
   }
 }
 
+// ================================================================================================
 bool VirtualGPU::create() {
   // Pick a reasonable queue size
-  uint32_t queue_size = 1024;
+  uint32_t queue_size = ROC_AQL_QUEUE_SIZE;
   gpu_queue_ = roc_device_.acquireQueue(queue_size, cooperative_, cuMask_, priority_);
   if (!gpu_queue_) return false;
 
@@ -1174,16 +1177,29 @@ bool VirtualGPU::create() {
 // ================================================================================================
 bool VirtualGPU::initPool(size_t kernarg_pool_size) {
   kernarg_pool_size_ = kernarg_pool_size;
-  kernarg_pool_base_ = reinterpret_cast<char*>(roc_device_.hostAlloc(kernarg_pool_size_, 0,
-                                               Device::MemorySegment::kKernArg));
+  kernarg_pool_chunk_end_ = kernarg_pool_size_ / KernelArgPoolNumSignal;
+  active_chunk_ = 0;
+  kernarg_pool_base_ = reinterpret_cast<address>(roc_device_.hostAlloc(kernarg_pool_size_, 0,
+                                                 Device::MemorySegment::kKernArg));
   if (kernarg_pool_base_ == nullptr) {
     return false;
+  }
+  hsa_agent_t agent = gpu_device();
+  for (auto& it : kernarg_pool_signal_) {
+    if (HSA_STATUS_SUCCESS != hsa_signal_create(0, 1, &agent, &it)) {
+      return false;
+    }
   }
   return true;
 }
 
 // ================================================================================================
 void VirtualGPU::destroyPool() {
+  for (auto& it : kernarg_pool_signal_) {
+    if (it.handle != 0) {
+      hsa_signal_destroy(it);
+    }
+  }
   if (kernarg_pool_base_ != nullptr) {
     roc_device_.hostFree(kernarg_pool_base_, kernarg_pool_size_);
   }
@@ -1191,28 +1207,44 @@ void VirtualGPU::destroyPool() {
 
 // ================================================================================================
 void* VirtualGPU::allocKernArg(size_t size, size_t alignment) {
-  char* result = nullptr;
+  address result = nullptr;
   do {
     result = amd::alignUp(kernarg_pool_base_ + kernarg_pool_cur_offset_, alignment);
     const size_t pool_new_usage = (result + size) - kernarg_pool_base_;
-    if (pool_new_usage <= kernarg_pool_size_) {
+    if (pool_new_usage <= kernarg_pool_chunk_end_) {
       kernarg_pool_cur_offset_ = pool_new_usage;
       return result;
     } else {
       //! We run out of the arguments space!
       //! That means the app didn't call clFlush/clFinish for very long time.
-      //! We can issue a barrier to avoid expensive extra memory allocations.
-
-      // Dispatch barrier packet into the queue and wait till it finishes.
-      dispatchBarrierPacket(kBarrierPacketHeader);
-      if (!Barriers().WaitCurrent()) {
-        LogError("Kernel arguments reset failed");
-      }
-      resetKernArgPool();
+      // Reset the signal for the barrier packet
+      hsa_signal_silent_store_relaxed(kernarg_pool_signal_[active_chunk_], kInitSignalValueOne);
+      // Dispatch a barrier packet into the queue
+      dispatchBarrierPacket(kBarrierPacketHeader, true, kernarg_pool_signal_[active_chunk_]);
+      // Get the next chunk
+      active_chunk_ = ++active_chunk_ % KernelArgPoolNumSignal;
+      // Make sure the new active chunk is free
+      bool test = WaitForSignal(kernarg_pool_signal_[active_chunk_], ActiveWait());
+      assert(test && "Runtime can't fail a wait for chunk!");
+      // Make sure the current offset matches the new chunk to avoid possible overlaps
+      // between chunks and issues during recycle
+      kernarg_pool_cur_offset_ = (active_chunk_ == 0) ? 0 : kernarg_pool_chunk_end_;
+      kernarg_pool_chunk_end_ = kernarg_pool_cur_offset_ +
+                                kernarg_pool_size_ / KernelArgPoolNumSignal;
     }
   } while (true);
-
   return result;
+}
+
+// ================================================================================================
+address VirtualGPU::allocKernelArguments(size_t size, size_t alignment) {
+  if (ROCR_SKIP_KERNEL_ARG_COPY) {
+    // Make sure VirtualGPU has an exclusive access to the resources
+    amd::ScopedLock lock(execution());
+    return reinterpret_cast<address>(allocKernArg(size, alignment));
+  } else {
+    return nullptr;
+  }
 }
 
 // ================================================================================================
@@ -2211,10 +2243,30 @@ void VirtualGPU::submitFillMemory(amd::FillMemoryCommand& cmd) {
   amd::ScopedLock lock(execution());
 
   profilingBegin(cmd);
-
-  if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(), cmd.origin(),
-                  cmd.size())) {
-    cmd.setStatus(CL_INVALID_OPERATION);
+  if (cmd.type() == CL_COMMAND_FILL_IMAGE) {
+    if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(),
+        cmd.origin(), cmd.size())) {
+      cmd.setStatus(CL_INVALID_OPERATION);
+    }
+  } else {
+    size_t width  = cmd.size().c[0];
+    size_t height = cmd.size().c[1];
+    size_t depth  = cmd.size().c[2];
+    size_t pitch  = cmd.surface().c[0];
+    amd::Coord3D origin = cmd.origin();
+    amd::Coord3D region{cmd.surface().c[1], cmd.surface().c[2], depth};
+    amd::BufferRect rect;
+    rect.create(static_cast<size_t*>(origin), static_cast<size_t*>(region),
+        pitch, 0);
+    for (size_t slice = 0; slice < depth; slice++) {
+      for (size_t row = 0; row < height; row++) {
+        const size_t rowOffset = rect.offset(0, row, slice);
+        if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(),
+            amd::Coord3D{rowOffset, 0, 0}, amd::Coord3D{width, 1, 1})) {
+          cmd.setStatus(CL_INVALID_OPERATION);
+        }
+      }
+    }
   }
   profilingEnd(cmd);
 }
@@ -2257,7 +2309,7 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
   profilingBegin(cmd);
 
   const cl_command_type type = cmd.type();
-  const int64_t value = cmd.value();
+  const uint64_t value = cmd.value();
   const uint64_t mask = cmd.mask();
   const unsigned int flags = cmd.flags();
   const size_t sizeBytes = cmd.sizeBytes();
@@ -2267,44 +2319,58 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
   Memory* memory = dev().getRocMemory(amdMemory);
 
   if (type == ROCCLR_COMMAND_STREAM_WAIT_VALUE) {
-    hsa_amd_barrier_value_packet_t aqlPacket;
-    hsa_amd_vendor_packet_header_t header;
-    hsa_signal_t signal;
-    Buffer* buff = static_cast<Buffer*>(memory);
+    if (GPU_STREAMOPS_CP_WAIT) {
+      hsa_amd_barrier_value_packet_t aqlPacket;
+      hsa_amd_vendor_packet_header_t header;
+      hsa_signal_t signal;
+      Buffer* buff = static_cast<Buffer*>(memory);
 
-    header.header = kBarrierVendorPacketHeader;
-    header.AmdFormat = HSA_AMD_PACKET_TYPE_BARRIER_VALUE;
-    aqlPacket.signal = buff->getSignal();
-    aqlPacket.completion_signal = Barriers().ActiveSignal();
+      header.header = kBarrierVendorPacketHeader;
+      header.AmdFormat = HSA_AMD_PACKET_TYPE_BARRIER_VALUE;
+      aqlPacket.signal = buff->getSignal();
+      aqlPacket.completion_signal = Barriers().ActiveSignal();
 
-    // mask is always applied on value at signal before performing
-    // the comparision defiend by 'condition'
-    switch (flags) {
-      case ROCCLR_STREAM_WAIT_VALUE_GTE:
-        aqlPacket.value = value;
-        aqlPacket.mask = mask;
-        aqlPacket.cond = HSA_SIGNAL_CONDITION_GTE;
-        break;
-      case ROCCLR_STREAM_WAIT_VALUE_EQ:
-        aqlPacket.value = value;
-        aqlPacket.mask = mask;
-        aqlPacket.cond = HSA_SIGNAL_CONDITION_EQ;
-        break;
-      case ROCCLR_STREAM_WAIT_VALUE_AND:
-        aqlPacket.value = 0;
-        aqlPacket.mask = (value & mask);
-        aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
-        break;
-      case ROCCLR_STREAM_WAIT_VALUE_NOR:
-        aqlPacket.value = ~value & mask;
-        aqlPacket.mask = ~value & mask;
-        aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
-        break;
-      default:
-        ShouldNotReachHere();
-        break;
+      // mask is always applied on value at signal before performing
+      // the comparision defiend by 'condition'
+      switch (flags) {
+        case ROCCLR_STREAM_WAIT_VALUE_GTE:
+          aqlPacket.value = value;
+          aqlPacket.mask = mask;
+          aqlPacket.cond = HSA_SIGNAL_CONDITION_GTE;
+          break;
+        case ROCCLR_STREAM_WAIT_VALUE_EQ:
+          aqlPacket.value = value;
+          aqlPacket.mask = mask;
+          aqlPacket.cond = HSA_SIGNAL_CONDITION_EQ;
+          break;
+        case ROCCLR_STREAM_WAIT_VALUE_AND:
+          aqlPacket.value = 0;
+          aqlPacket.mask = (value & mask);
+          aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
+          break;
+        case ROCCLR_STREAM_WAIT_VALUE_NOR:
+          aqlPacket.value = ~value & mask;
+          aqlPacket.mask = ~value & mask;
+          aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
+          break;
+        default:
+          ShouldNotReachHere();
+          break;
+      }
+      dispatchBarrierValuePacket(&aqlPacket, header);
     }
-    dispatchBarrierValuePacket(&aqlPacket, header);
+    // Use a blit kernel to perform the wait operation
+    else {
+    // mask is applied on value before performing
+    // the comparision defined by 'condition'
+      bool result = static_cast<KernelBlitManager&>(blitMgr()).streamOpsWait(*memory, value,
+                                                  sizeBytes, flags, mask);
+      ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Waiting for value: 0x%lx."
+              " Flags: 0x%lx mask: 0x%lx", value, flags, mask);
+      if (!result) {
+        LogError("submitStreamOperation: Wait failed!");
+      }
+    }
   } else if (type == ROCCLR_COMMAND_STREAM_WRITE_VALUE) {
     amd::Coord3D origin(offset);
     amd::Coord3D size(sizeBytes);
@@ -2312,10 +2378,12 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
     // Ensure memory ordering preceding the write
     dispatchBarrierPacket(kBarrierPacketReleaseHeader);
 
-    if (!fillMemory(CL_COMMAND_FILL_BUFFER, amdMemory, &value, sizeBytes, origin, size, true)) {
-      cmd.setStatus(CL_INVALID_OPERATION);
-    }
+    bool result = static_cast<KernelBlitManager&>(blitMgr()).streamOpsWrite(*memory, value,
+                                                  sizeBytes);
     ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Writing value: 0x%lx", value);
+    if (!result) {
+      LogError("submitStreamOperation: Write failed!");
+    }
   } else {
     ShouldNotReachHere();
   }
@@ -2514,6 +2582,9 @@ bool VirtualGPU::createVirtualQueue(uint deviceQueueSize)
   // Add mask array for AmdAqlWrap slots
   allocSize += amd::alignUp(numSlots, DeviceQueueMaskSize) / 8;
 
+  // Make sure the allocation size aligns with DWORD.
+  allocSize = amd::alignUp(allocSize, sizeof(uint64_t));
+
   // CL_MEM_ALLOC_HOST_PTR/CL_MEM_READ_WRITE
   virtualQueue_ = new (dev().context()) amd::Buffer(dev().context(), CL_MEM_READ_WRITE, allocSize);
 
@@ -2642,17 +2713,6 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes, const 
       }
     }
 
-    // Find all parameters for the current kernel
-
-    // Allocate buffer to hold kernel arguments
-    address argBuffer = (address)allocKernArg(gpuKernel.KernargSegmentByteSize(),
-                                              gpuKernel.KernargSegmentAlignment());
-
-    if (argBuffer == nullptr) {
-      LogError("Out of memory");
-      return false;
-    }
-
     ClPrint(amd::LOG_INFO, amd::LOG_KERN, "ShaderName : %s", gpuKernel.name().c_str());
 
     // Check if runtime has to setup hidden arguments
@@ -2756,8 +2816,16 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes, const 
       }
     }
 
-    // Load all kernel arguments
-    WriteAqlArgAt(argBuffer, parameters, gpuKernel.KernargSegmentByteSize(), 0);
+    address argBuffer = const_cast<address>(parameters);
+    // Find all parameters for the current kernel
+    if (!kernel.parameters().deviceKernelArgs() || gpuKernel.isInternalKernel()) {
+      // Allocate buffer to hold kernel arguments
+      argBuffer = reinterpret_cast<address>(allocKernArg(gpuKernel.KernargSegmentByteSize(),
+                                            gpuKernel.KernargSegmentAlignment()));
+      // Load all kernel arguments
+      WriteAqlArgAt(argBuffer, parameters, gpuKernel.KernargSegmentByteSize(), 0);
+    }
+
     // Note: In a case of structs the size won't match,
     // since HSAIL compiler expects a reference...
     assert(gpuKernel.KernargSegmentByteSize() <= signature.paramsSize() &&

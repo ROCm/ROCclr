@@ -450,7 +450,7 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
 
   // Image support fields
   if (settings().imageSupport_) {
-    info_.imageSupport_ = CL_TRUE;
+    info_.imageSupport_ = true;
     info_.maxSamplers_ = MaxSamplers;
     info_.maxReadImageArgs_ = MaxReadImage;
     info_.maxWriteImageArgs_ = MaxWriteImage;
@@ -463,21 +463,21 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
     info_.imagePitchAlignment_ = 256;        // PAL uses LINEAR_ALIGNED
     info_.imageBaseAddressAlignment_ = 256;  // XXX: 256 byte base address alignment for now
 
-    info_.bufferFromImageSupport_ = CL_TRUE;
+    info_.bufferFromImageSupport_ = true;
   }
 
-  info_.errorCorrectionSupport_ = CL_FALSE;
+  info_.errorCorrectionSupport_ = false;
 
   if (settings().apuSystem_) {
-    info_.hostUnifiedMemory_ = CL_TRUE;
+    info_.hostUnifiedMemory_ = true;
   }
 
   info_.profilingTimerResolution_ = 1;
   info_.profilingTimerOffset_ = amd::Os::offsetToEpochNanos();
-  info_.littleEndian_ = CL_TRUE;
-  info_.available_ = CL_TRUE;
-  info_.compilerAvailable_ = CL_TRUE;
-  info_.linkerAvailable_ = CL_TRUE;
+  info_.littleEndian_ = true;
+  info_.available_ = true;
+  info_.compilerAvailable_ = true;
+  info_.linkerAvailable_ = true;
 
   info_.executionCapabilities_ = CL_EXEC_KERNEL;
   info_.preferredPlatformAtomicAlignment_ = 0;
@@ -882,7 +882,7 @@ bool Device::create(Pal::IDevice* device) {
   Pal::PalPublicSettings* const palSettings = iDev()->GetPublicSettings();
   // Modify settings here
   // palSettings ...
-  palSettings->forceHighClocks = amd::IS_HIP || appProfile_.enableHighPerformanceState();
+  palSettings->forceHighClocks = appProfile_.enableHighPerformanceState();
   palSettings->longRunningSubmissions = true;
   palSettings->cmdBufBatchedSubmitChainLimit = 0;
   palSettings->disableResourceProcessingManager = true;
@@ -1125,6 +1125,14 @@ bool Device::initializeHeapResources() {
       }
     }
 
+    // Update RGP capture manager
+    if (rgpCaptureMgr_ != nullptr) {
+      if (!rgpCaptureMgr_->Update(platform_)) {
+        delete rgpCaptureMgr_;
+        rgpCaptureMgr_ = nullptr;
+      }
+    }
+
     // Create a synchronized transfer queue
     xferQueue_ = new VirtualGPU(*this);
     if (!(xferQueue_ && xferQueue_->create(false))) {
@@ -1136,14 +1144,6 @@ bool Device::initializeHeapResources() {
       return false;
     }
     xferQueue_->enableSyncedBlit();
-
-    // Update RGP capture manager
-    if (rgpCaptureMgr_ != nullptr) {
-      if (!rgpCaptureMgr_->Update(platform_)) {
-        delete rgpCaptureMgr_;
-        rgpCaptureMgr_ = nullptr;
-      }
-    }
   }
   return true;
 }

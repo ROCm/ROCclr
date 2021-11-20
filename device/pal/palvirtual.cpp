@@ -527,7 +527,7 @@ void VirtualGPU::Queue::DumpMemoryReferences() const {
       dump << (it.first)->iMem()->Desc().gpuVirtAddr << ", "
            << (it.first)->iMem()->Desc().gpuVirtAddr + (it.first)->iMem()->Desc().size;
       dump.setf(std::ios::dec);
-      dump << "] CbId:" << it.second << ", Heap: " << (it.first)->iMem()->Desc().preferredHeap
+      dump << "] CbId:" << it.second << ", Heap: " << (it.first)->iMem()->Desc().heaps[0]
            << "\n";
       idx++;
     }
@@ -974,7 +974,6 @@ bool VirtualGPU::create(bool profiling, uint deviceQueueSize, uint rtCUs,
   // Create HSAILPrintf class
   printfDbgHSA_ = new PrintfDbgHSA(gpuDevice_);
   if (nullptr == printfDbgHSA_) {
-    delete printfDbgHSA_;
     LogError("Could not create PrintfDbgHSA class!");
     return false;
   }
@@ -1107,13 +1106,8 @@ VirtualGPU::~VirtualGPU() {
 
   {
     // Destroy queues
-    if (nullptr != queues_[MainEngine]) {
-      delete queues_[MainEngine];
-    }
-
-    if (nullptr != queues_[SdmaEngine]) {
-      delete queues_[SdmaEngine];
-    }
+    delete queues_[MainEngine];
+    delete queues_[SdmaEngine];
 
     if (nullptr != cmdAllocator_) {
       cmdAllocator_->Destroy();
@@ -1856,18 +1850,37 @@ bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const 
   return true;
 }
 
-void VirtualGPU::submitFillMemory(amd::FillMemoryCommand& vcmd) {
+void VirtualGPU::submitFillMemory(amd::FillMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
 
-  profilingBegin(vcmd, true);
-
-  if (!fillMemory(vcmd.type(), &vcmd.memory(), vcmd.pattern(), vcmd.patternSize(), vcmd.origin(),
-                  vcmd.size())) {
-    vcmd.setStatus(CL_INVALID_OPERATION);
+  profilingBegin(cmd, true);
+  if (cmd.type() == CL_COMMAND_FILL_IMAGE) {
+    if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(),
+        cmd.origin(), cmd.size())) {
+      cmd.setStatus(CL_INVALID_OPERATION);
+    }
+  } else {
+    size_t width  = cmd.size().c[0];
+    size_t height = cmd.size().c[1];
+    size_t depth  = cmd.size().c[2];
+    size_t pitch  = cmd.surface().c[0];
+    amd::Coord3D origin = cmd.origin();
+    amd::Coord3D region{cmd.surface().c[1], cmd.surface().c[2], depth};
+    amd::BufferRect rect;
+    rect.create(static_cast<size_t*>(origin), static_cast<size_t*>(region),
+        pitch, 0);
+    for (size_t slice = 0; slice < depth; slice++) {
+      for (size_t row = 0; row < height; row++) {
+        const size_t rowOffset = rect.offset(0, row, slice);
+        if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(),
+            amd::Coord3D{rowOffset, 0, 0}, amd::Coord3D{width, 1, 1})) {
+          cmd.setStatus(CL_INVALID_OPERATION);
+        }
+      }
+    }
   }
-
-  profilingEnd(vcmd);
+  profilingEnd(cmd);
 }
 
 void VirtualGPU::submitCopyMemoryP2P(amd::CopyMemoryP2PCommand& cmd) {

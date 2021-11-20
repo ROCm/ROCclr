@@ -200,7 +200,7 @@ void Device::setupCpuAgent() {
   system_coarse_segment_ = cpu_agents_[index].coarse_grain_pool;
   system_kernarg_segment_ = cpu_agents_[index].kern_arg_pool;
   ClPrint(amd::LOG_INFO, amd::LOG_INIT, "Numa selects cpu agent[%zu]=0x%zx(fine=0x%zx,"
-          "coarse=0x%zx, kern_arg=0x%zx) for gpu agent=0x%zx", index, cpu_agent_.handle,
+          "coarse=0x%zx) for gpu agent=0x%zx", index, cpu_agent_.handle,
           system_segment_.handle, system_coarse_segment_.handle, _bkendDevice.handle);
 }
 
@@ -242,16 +242,6 @@ Device::~Device() {
 
   if (context_ != nullptr) {
     context_->release();
-  }
-
-  if (info_.extensions_) {
-    delete[] info_.extensions_;
-    info_.extensions_ = nullptr;
-  }
-
-  if (settings_) {
-    delete settings_;
-    settings_ = nullptr;
   }
 
   delete[] p2p_agents_list_;
@@ -316,15 +306,6 @@ bool NullDevice::init() {
 }
 
 NullDevice::~NullDevice() {
-  if (info_.extensions_) {
-    delete[] info_.extensions_;
-    info_.extensions_ = nullptr;
-  }
-
-  if (settings_) {
-    delete settings_;
-    settings_ = nullptr;
-  }
 }
 
 hsa_status_t Device::iterateAgentCallback(hsa_agent_t agent, void* data) {
@@ -1273,7 +1254,7 @@ bool Device::populateOCLDeviceConstants() {
 
   if (agent_profile_ == HSA_PROFILE_FULL) {  // full-profile = participating in coherent memory,
                                              // base-profile = NUMA based non-coherent memory
-    info_.hostUnifiedMemory_ = CL_TRUE;
+    info_.hostUnifiedMemory_ = true;
   }
   info_.memBaseAddrAlign_ =
       8 * (flagIsDefault(MEMOBJ_BASE_ADDR_ALIGN) ? sizeof(int64_t[16]) : MEMOBJ_BASE_ADDR_ALIGN);
@@ -1295,7 +1276,7 @@ bool Device::populateOCLDeviceConstants() {
 
   info_.addressBits_ = LP64_SWITCH(32, 64);
   info_.maxSamplers_ = 16;
-  info_.bufferFromImageSupport_ = CL_FALSE;
+  info_.bufferFromImageSupport_ = false;
   info_.oclcVersion_ = "OpenCL C " OPENCL_C_VERSION_STR " ";
   info_.spirVersions_ = "";
 
@@ -1432,9 +1413,9 @@ bool Device::populateOCLDeviceConstants() {
 
     info_.imageBaseAddressAlignment_ = 256;
 
-    info_.bufferFromImageSupport_ = CL_FALSE;
+    info_.bufferFromImageSupport_ = false;
 
-    info_.imageSupport_ = (info_.maxReadWriteImageArgs_ > 0) ? CL_TRUE : CL_FALSE;
+    info_.imageSupport_ = (info_.maxReadWriteImageArgs_ > 0) ? true : false;
   }
 
   // Enable SVM Capabilities of Hsa device. Ensure
@@ -1463,15 +1444,13 @@ bool Device::populateOCLDeviceConstants() {
   }
 
   if (settings().checkExtension(ClAmdDeviceAttributeQuery)) {
-    info_.simdPerCU_ = settings().enableWgpMode_
-                       ? (2 * isa().simdPerCU())
-                       : isa().simdPerCU();
     info_.simdWidth_ = isa().simdWidth();
     info_.simdInstructionWidth_ = isa().simdInstructionWidth();
     if (HSA_STATUS_SUCCESS !=
         hsa_agent_get_info(_bkendDevice, HSA_AGENT_INFO_WAVEFRONT_SIZE, &info_.wavefrontWidth_)) {
       return false;
     }
+
     if (HSA_STATUS_SUCCESS !=
         hsa_agent_get_info(_bkendDevice,
                            static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_MEMORY_WIDTH),
@@ -1479,12 +1458,24 @@ bool Device::populateOCLDeviceConstants() {
       return false;
     }
 
-    uint32_t max_waves_per_cu;
+    if (HSA_STATUS_SUCCESS !=
+        hsa_agent_get_info(_bkendDevice,
+                           static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_NUM_SIMDS_PER_CU),
+                           &info_.simdPerCU_)) {
+      return false;
+    }
+
+    uint32_t max_waves_per_cu = 0;
     if (HSA_STATUS_SUCCESS !=
         hsa_agent_get_info(_bkendDevice,
                            static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_MAX_WAVES_PER_CU),
                            &max_waves_per_cu)) {
       return false;
+    }
+
+    if (settings().enableWgpMode_) {
+      info_.simdPerCU_ *= 2;
+      max_waves_per_cu *= 2;
     }
 
     info_.maxThreadsPerCU_ = info_.wavefrontWidth_ * max_waves_per_cu;
@@ -2236,9 +2227,6 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
   }
   if (info().hmmSupported_) {
     std::vector<hsa_amd_svm_attribute_pair_t> attr;
-    if (first_alloc) {
-      attr.push_back({HSA_AMD_SVM_ATTRIB_GLOBAL_FLAG, HSA_AMD_SVM_GLOBAL_FLAG_COARSE_GRAINED});
-    }
 
     switch (advice) {
       case amd::MemoryAdvice::SetReadMostly:
@@ -2281,8 +2269,8 @@ bool Device::SetSvmAttributesInt(const void* dev_ptr, size_t count,
         break;
       }
       case amd::MemoryAdvice::UnsetAccessedBy:
-        // @note: 0 may cause a failure on old runtimes
-        attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE_IN_PLACE, 0});
+        // When unsetting we should use HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE for the agent
+        attr.push_back({HSA_AMD_SVM_ATTRIB_AGENT_ACCESSIBLE, getBackendDevice().handle});
         break;
       case amd::MemoryAdvice::SetCoarseGrain:
         attr.push_back({HSA_AMD_SVM_ATTRIB_GLOBAL_FLAG, HSA_AMD_SVM_GLOBAL_FLAG_COARSE_GRAINED});
@@ -2577,11 +2565,10 @@ bool Device::IsHwEventReady(const amd::Event& event, bool wait) const {
     ClPrint(amd::LOG_INFO, amd::LOG_SIG, "No HW event");
     return false;
   } else if (wait) {
-    auto* vdev = event.command().queue()->vdev();
-    WaitForSignal(reinterpret_cast<ProfilingSignal*>(hw_event)->signal_, vdev->ActiveWait());
-    return true;
+    return WaitForSignal(reinterpret_cast<ProfilingSignal*>(hw_event)->signal_, ActiveWait());
   }
-  return (hsa_signal_load_relaxed(reinterpret_cast<ProfilingSignal*>(hw_event)->signal_) <= 0);
+  static constexpr bool Timeout = true;
+  return WaitForSignal<Timeout>(reinterpret_cast<ProfilingSignal*>(hw_event)->signal_);
 }
 
 // ================================================================================================
@@ -2914,13 +2901,12 @@ bool Device::findLinkInfo(const hsa_amd_memory_pool_t& pool,
   }
 
   // Retrieve link info on the pool.
-  hsa_amd_memory_pool_link_info_t* link_info = new hsa_amd_memory_pool_link_info_t[hops];
+  std::vector<hsa_amd_memory_pool_link_info_t> link_info(hops);
   hsa_status = hsa_amd_agent_memory_pool_get_info(_bkendDevice, pool,
-               HSA_AMD_AGENT_MEMORY_POOL_INFO_LINK_INFO, link_info);
+               HSA_AMD_AGENT_MEMORY_POOL_INFO_LINK_INFO, link_info.data());
 
   if (hsa_status != HSA_STATUS_SUCCESS) {
     DevLogPrintfError("Cannot retrieve link info, hsa failed with status: %d", hsa_status);
-    delete[] link_info;
     return false;
   }
 
@@ -2959,13 +2945,10 @@ bool Device::findLinkInfo(const hsa_amd_memory_pool_t& pool,
       }
       default: {
         DevLogPrintfError("Invalid LinkAttribute: %d ", link_attr.first);
-        delete[] link_info;
         return false;
       }
     }
   }
-
-  delete[] link_info;
 
   return true;
 }

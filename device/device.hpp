@@ -376,8 +376,8 @@ struct Info : public amd::EmbeddedObject {
   //  the device implement error correction.
   uint32_t errorCorrectionSupport_;
 
-  //! CL_TRUE if the device and the host have a unified memory subsystem and
-  //  is CL_FALSE otherwise.
+  //! true if the device and the host have a unified memory subsystem and
+  //  is false otherwise.
   uint32_t hostUnifiedMemory_;
 
   //! Describes the resolution of device timer.
@@ -386,7 +386,7 @@ struct Info : public amd::EmbeddedObject {
   //! Timer starting point offset to Epoch.
   uint64_t profilingTimerOffset_;
 
-  //! CL_TRUE if device is a little endian device.
+  //! true if device is a little endian device.
   uint32_t littleEndian_;
 
   //! If enabled, implies that commands can be submitted to command-queues
@@ -454,7 +454,7 @@ struct Info : public amd::EmbeddedObject {
   //! Returns max number of images in a 1D or 2D image array
   size_t imageMaxArraySize_;
 
-  //! Returns CL_TRUE if the devices preference is for the user to be
+  //! Returns true if the devices preference is for the user to be
   //! responsible for synchronization
   uint32_t preferredInteropUserSync_;
 
@@ -732,6 +732,16 @@ class Memory : public amd::HeapObject {
                                size_t* slicePitch = NULL    //!< Slice for the mapped memory
   ) {
     return NULL;
+  }
+
+  bool isPersistentMapped() const { return (flags_ & PersistentMap) ? true : false; }
+  void setPersistentMapFlag(bool persistentMapped) {
+    if (persistentMapped == true) {
+      flags_ |= PersistentMap;
+    }
+    else {
+      flags_ &= ~PersistentMap;
+    }
   }
 
   virtual bool pinSystemMemory(void* hostPtr,  //!< System memory address
@@ -1204,6 +1214,9 @@ class VirtualDevice : public amd::HeapObject {
   virtual void submitStreamOperation(amd::StreamOperationCommand& cmd) { ShouldNotReachHere(); }
 
   virtual void profilerAttach(bool enable) = 0;
+
+  virtual address allocKernelArguments(size_t size, size_t alignment) { return nullptr; }
+
   //! Get the blit manager object
   device::BlitManager& blitMgr() const { return *blitMgr_; }
 
