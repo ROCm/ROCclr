@@ -1,4 +1,4 @@
-/* Copyright (c) 2018 - 2021 Advanced Micro Devices, Inc.
+/* Copyright (c) 2010 - 2021 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -22,22 +22,41 @@ namespace roc {
 
 #define BLIT_KERNEL(...) #__VA_ARGS__
 
+const char* rocBlitLinearSourceCode = BLIT_KERNEL(
+
+  // Extern
+  extern void __amd_streamOpsWrite(__global uint*, __global ulong*, ulong, ulong);
+
+  extern void __amd_streamOpsWait(__global uint*,__global ulong*, ulong, ulong, ulong);
+
+  // Implementation
+  __kernel void __amd_rocclr_streamOpsWrite(__global uint* ptrInt, __global ulong* ptrUlong,
+                                            ulong value, ulong sizeBytes) {
+    __amd_streamOpsWrite(ptrInt, ptrUlong, value, sizeBytes);
+  }
+
+  __kernel void __amd_rocclr_streamOpsWait(__global uint* ptrInt, __global ulong* ptrUlong,
+                                           ulong value, ulong flags, ulong mask) {
+    __amd_streamOpsWait(ptrInt, ptrUlong, value, flags, mask);
+  }
+);
+
 const char* SchedulerSourceCode = BLIT_KERNEL(
-\n
-extern void __amd_scheduler_rocm(__global void*);
-\n
-__kernel void __amd_rocclr_scheduler(__global void* params) {
-  __amd_scheduler_rocm(params);
-}
-\n);
+
+  extern void __amd_scheduler_rocm(__global void*);
+
+  __kernel void __amd_rocclr_scheduler(__global void* params) {
+    __amd_scheduler_rocm(params);
+  }
+);
 
 const char* GwsInitSourceCode = BLIT_KERNEL(
-\n
-extern void __ockl_gws_init(uint nwm1, uint rid);
-\n
-__kernel void __amd_rocclr_gwsInit(uint value) {
-  __ockl_gws_init(value, 0);
-}
-\n);
+
+  extern void __ockl_gws_init(uint nwm1, uint rid);
+
+  __kernel void __amd_rocclr_gwsInit(uint value) {
+    __ockl_gws_init(value, 0);
+  }
+);
 
 }  // namespace roc

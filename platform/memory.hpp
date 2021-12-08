@@ -188,7 +188,8 @@ class Memory : public amd::RuntimeObject {
     };
     uint32_t flagsEx_;
   };
-
+  //! unique buffer id for each memory allocation
+  uint32_t uniqueId_ = 0;
   //! used to save the user data during memory allocation.
   UserData userData_;
 
@@ -293,6 +294,9 @@ class Memory : public amd::RuntimeObject {
                                   bool alloc = true   //!< Allocates memory
   );
 
+  //! Get origianl device memory
+  device::Memory* getOriginalDeviceMemory() const { return deviceMemories_[0].value_; };
+
   //! Allocate host memory (as required)
   bool allocHostMemory(void* initFrom,         //!< Host memory provided by the application
                        bool allocHostMem,      //!< Force system memory allocation
@@ -366,7 +370,7 @@ class Memory : public amd::RuntimeObject {
   device::Memory* BaseP2PMemory() const { return deviceMemories_[0].value_; }
   device::Memory* svmBase() const { return svmBase_; }  //!< Returns SVM base for MGPU case
 
-
+  uint32_t getUniqueId() { return uniqueId_; }
   //!save the user data during memory allocation
   UserData& getUserData() { return userData_; }
 

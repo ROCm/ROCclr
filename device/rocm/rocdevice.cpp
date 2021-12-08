@@ -170,7 +170,8 @@ Device::Device(hsa_agent_t bkendDevice)
     , queuePool_(QueuePriority::Total)
     , coopHostcallBuffer_(nullptr)
     , queueWithCUMaskPool_(QueuePriority::Total)
-    , numOfVgpus_(0) {
+    , numOfVgpus_(0)
+    , preferred_numa_node_(0) {
   group_segment_.handle = 0;
   system_segment_.handle = 0;
   system_coarse_segment_.handle = 0;
@@ -194,7 +195,7 @@ void Device::setupCpuAgent() {
       }
     }
   }
-
+  preferred_numa_node_ = index;
   cpu_agent_ = cpu_agents_[index].agent;
   system_segment_ = cpu_agents_[index].fine_grain_pool;
   system_coarse_segment_ = cpu_agents_[index].coarse_grain_pool;
@@ -518,6 +519,7 @@ bool Device::init() {
 
 extern const char* SchedulerSourceCode;
 extern const char* GwsInitSourceCode;
+extern const char* rocBlitLinearSourceCode;
 
 void Device::tearDown() {
   NullDevice::tearDown();
@@ -832,21 +834,26 @@ void Device::ReleaseExclusiveGpuAccess(VirtualGPU& vgpu) const {
 
 bool Device::createBlitProgram() {
   bool result = true;
-  const char* scheduler = nullptr;
+  std::string extraKernel;
 
 #if defined(USE_COMGR_LIBRARY)
-  std::string sch = SchedulerSourceCode;
   if (settings().useLightning_) {
-    if (info().cooperativeGroups_) {
-      sch.append(GwsInitSourceCode);
+    if (amd::IS_HIP) {
+      extraKernel = rocBlitLinearSourceCode;
+      if (info().cooperativeGroups_) {
+        extraKernel.append(GwsInitSourceCode);
+      }
     }
-    scheduler = sch.c_str();
+    else {
+      extraKernel = SchedulerSourceCode;
+    }
+
   }
 #endif  // USE_COMGR_LIBRARY
 
   blitProgram_ = new BlitProgram(context_);
   // Create blit programs
-  if (blitProgram_ == nullptr || !blitProgram_->create(this, scheduler)) {
+  if (blitProgram_ == nullptr || !blitProgram_->create(this, extraKernel)) {
     delete blitProgram_;
     blitProgram_ = nullptr;
     LogError("Couldn't create blit kernels!");

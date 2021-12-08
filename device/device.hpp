@@ -1529,7 +1529,7 @@ class Device : public RuntimeObject {
 
     //! Creates blit program for this device
     bool create(Device* device,                  //!< Device object
-                const char* extraKernel = NULL,  //!< Extra kernels from the device layer
+                const std::string& extraKernel,  //!< Extra kernels from the device layer
                 const char* extraOptions = NULL  //!< Extra compilation options
     );
   };
@@ -1730,6 +1730,8 @@ class Device : public RuntimeObject {
       ) const {
     return false;
   };
+
+  virtual const uint32_t getPreferredNumaNode() const { return 0; }
   virtual void ReleaseGlobalSignal(void* signal) const {}
 
   //! Returns TRUE if the device is available for computations

@@ -347,6 +347,7 @@ bool VirtualGPU::HwQueueTracker::Create() {
 // ================================================================================================
 hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
     hsa_signal_value_t init_val, Timestamp* ts, uint32_t queue_size) {
+  bool new_signal = false;
   // If queue size grows, then add more signals to avoid more frequent stalls
   if (queue_size > signal_list_.size()) {
     std::unique_ptr<ProfilingSignal> signal(new ProfilingSignal());
@@ -357,19 +358,28 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
       uint32_t num_agents = (settings.system_scope_signal_) ? 0 : 1;
 
       if (HSA_STATUS_SUCCESS == hsa_signal_create(0, num_agents, agents, &signal->signal_)) {
-        signal_list_.push_back(signal.release());
+        // Find valid new index
+        ++current_id_ %= signal_list_.size();
+        // Insert the new signal into the current slot and ignore any wait
+        signal_list_.insert(signal_list_.begin() + current_id_, signal.release());
+        new_signal = true;
       }
     }
   }
-  // Find valid index
-  ++current_id_ %= signal_list_.size();
 
-  // Make sure the previous operation on the current signal is done
-  WaitCurrent();
+  // If it's the new signal, then the wait can be avoided.
+  // That will allow to grow the list of signals without stalls
+  if (!new_signal) {
+    // Find valid index
+    ++current_id_ %= signal_list_.size();
 
-  // Have to wait the next signal in the queue to avoid a race condition between
-  // a GPU waiter(which may be not triggered yet) and CPU signal reset below
-  WaitNext();
+    // Make sure the previous operation on the current signal is done
+    WaitCurrent();
+
+    // Have to wait the next signal in the queue to avoid a race condition between
+    // a GPU waiter(which may be not triggered yet) and CPU signal reset below
+    WaitNext();
+  }
 
   if (signal_list_[current_id_]->referenceCount() > 1) {
     // The signal was assigned to the global marker's event, hence runtime can't reuse it
@@ -775,8 +785,7 @@ bool VirtualGPU::dispatchGenericAqlPacket(
   AqlPacket* packet, uint16_t header, uint16_t rest, bool blocking, size_t size) {
   const uint32_t queueSize = gpu_queue_->size;
   const uint32_t queueMask = queueSize - 1;
-  // @note: Reserve extra slot for HW processing. There is unknown race condition in some apps.
-  const uint32_t sw_queue_size = queueMask - 1;
+  const uint32_t sw_queue_size = queueMask;
 
   // Check for queue full and wait if needed.
   uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, size);
@@ -794,8 +803,10 @@ bool VirtualGPU::dispatchGenericAqlPacket(
     amd::Os::yield();
   }
 
-  // Add blocking command if the original value of read index was behind of the queue size
-  if (blocking || (index - read) >= sw_queue_size) {
+  // Add blocking command if the original value of read index was behind of the queue size.
+  // Note: direct dispatch relies on the slot stall above to keep the forward progress
+  // of the app if a dispatched kernel requires some CPU input for completion
+  if (blocking || (!AMD_DIRECT_DISPATCH && (index - read) >= sw_queue_size)) {
     if (packet->completion_signal.handle == 0) {
       packet->completion_signal = Barriers().ActiveSignal();
     }
@@ -1613,7 +1624,7 @@ void VirtualGPU::submitSvmPrefetchAsync(amd::SvmPrefetchAsyncCommand& cmd) {
     // Initiate a prefetch command
     hsa_status_t status = hsa_amd_svm_prefetch_async(
         const_cast<void*>(cmd.dev_ptr()), cmd.count(), agent,
-        wait_events.size(), &wait_events[0], active);
+        wait_events.size(), wait_events.data(), active);
 
     // Wait for the prefetch. Should skip wait, but may require extra tracking for kernel execution
     if ((status != HSA_STATUS_SUCCESS) || !Barriers().WaitCurrent()) {

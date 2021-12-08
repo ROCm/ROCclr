@@ -37,6 +37,7 @@ endif()
 target_sources(rocclr PRIVATE
   ${ROCCLR_SRC_DIR}/device/rocm/rocappprofile.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocblit.cpp
+  ${ROCCLR_SRC_DIR}/device/rocm/rocblitcl.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/roccounters.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocdevice.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocglinterop.cpp
@@ -44,7 +45,6 @@ target_sources(rocclr PRIVATE
   ${ROCCLR_SRC_DIR}/device/rocm/rocmemory.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocprintf.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocprogram.cpp
-  ${ROCCLR_SRC_DIR}/device/rocm/rocschedcl.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocsettings.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocsignal.cpp
   ${ROCCLR_SRC_DIR}/device/rocm/rocvirtual.cpp

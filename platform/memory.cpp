@@ -28,6 +28,9 @@
 
 #include <atomic>
 
+// Stores the no. of memory allocations
+std::atomic<uint32_t> numAllocs = 0;
+
 namespace amd {
 
 bool BufferRect::create(const size_t* bufferOrigin, const size_t* region, size_t bufferRowPitch,
@@ -309,6 +312,8 @@ bool Memory::create(void* initFrom, bool sysMemAlloc, bool skipAlloc, bool force
     }
   }
 
+  // Store the unique id for each memory allocation
+  uniqueId_ = ++numAllocs;
   return true;
 }
 
@@ -459,7 +464,7 @@ bool Memory::setDestructorCallback(DestructorCallBackFunction callback, void* da
 void Memory::signalWrite(const Device* writer) {
   // Disable cache coherency layer for HIP
   if (!amd::IS_HIP) {
-    // (the potential race condition below doesn't matter, no critical
+    // (The potential race condition below doesn't matter, no critical
     // section needed)
     ++version_;
     lastWriter_ = writer;
