@@ -309,6 +309,9 @@ struct Info : public amd::EmbeddedObject {
   //! Max size of memory object allocation in bytes.
   uint64_t maxMemAllocSize_;
 
+  //! Max size of system memory allocation in bytes.
+  size_t maxPhysicalMemAllocSize_;
+
   //! Max width of 2D image in pixels.
   size_t image2DMaxWidth_;
 
@@ -830,6 +833,8 @@ class Memory : public amd::HeapObject {
   bool isCpuUncached() const { return (flags_ & MemoryCpuUncached) ? true : false; }
 
   virtual uint64_t virtualAddress() const { return 0; }
+
+  virtual uint64_t originalDeviceAddress() const { return 0; }
 
   //! Returns CPU pointer to HW state
   virtual const address cpuSrd() const { return nullptr; }
@@ -1530,7 +1535,7 @@ class Device : public RuntimeObject {
     //! Creates blit program for this device
     bool create(Device* device,                  //!< Device object
                 const std::string& extraKernel,  //!< Extra kernels from the device layer
-                const char* extraOptions = NULL  //!< Extra compilation options
+                const std::string& extraOptions  //!< Extra compilation options
     );
   };
 

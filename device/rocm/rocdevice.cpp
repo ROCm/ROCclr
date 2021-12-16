@@ -853,7 +853,7 @@ bool Device::createBlitProgram() {
 
   blitProgram_ = new BlitProgram(context_);
   // Create blit programs
-  if (blitProgram_ == nullptr || !blitProgram_->create(this, extraKernel)) {
+  if (blitProgram_ == nullptr || !blitProgram_->create(this, extraKernel, "")) {
     delete blitProgram_;
     blitProgram_ = nullptr;
     LogError("Couldn't create blit kernels!");
@@ -1226,6 +1226,9 @@ bool Device::populateOCLDeviceConstants() {
   // Make sure the max allocation size is not larger than the available memory size.
   info_.maxMemAllocSize_ = std::min(info_.maxMemAllocSize_, info_.globalMemSize_);
   info_.maxMemAllocSize_ = amd::alignDown(info_.maxMemAllocSize_, sizeof(uint64_t));
+
+  // Maximum system memory allocation size allowed
+  info_.maxPhysicalMemAllocSize_ = amd::Os::getPhysicalMemSize();
 
   // make sure we don't run anything over 8 params for now
   info_.maxParameterSize_ = 1024;
