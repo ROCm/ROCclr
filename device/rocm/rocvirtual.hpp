@@ -243,6 +243,12 @@ class VirtualGPU : public device::VirtualDevice {
     //! Get the last active signal on the queue
     ProfilingSignal* GetLastSignal() const { return signal_list_[current_id_]; }
 
+    //! Clear external signals
+    void ClearExternalSignals() { external_signals_.clear(); }
+
+    //! Empty check for external signals
+    bool IsExternalSignalListEmpty() const { return external_signals_.empty(); }
+
   private:
     //! Wait for the next active signal
     void WaitNext() {
@@ -452,12 +458,13 @@ class VirtualGPU : public device::VirtualDevice {
   //! Queue state flags
   union {
     struct {
-      uint32_t hasPendingDispatch_ : 1; //!< A kernel dispatch is outstanding
-      uint32_t profiling_          : 1; //!< Profiling is enabled
-      uint32_t cooperative_        : 1; //!< Cooperative launch is enabled
-      uint32_t addSystemScope_     : 1; //!< Insert a system scope to the next aql
-      uint32_t tracking_created_   : 1; //!< Enabled if tracking object was properly initialized
-      uint32_t profilerAttached_   : 1; //!< Indicates if profiler is attached
+      uint32_t hasPendingDispatch_    : 1; //!< A kernel dispatch is outstanding
+      uint32_t profiling_             : 1; //!< Profiling is enabled
+      uint32_t cooperative_           : 1; //!< Cooperative launch is enabled
+      uint32_t addSystemScope_        : 1; //!< Insert a system scope to the next aql
+      uint32_t tracking_created_      : 1; //!< Enabled if tracking object was properly initialized
+      uint32_t profilerAttached_      : 1; //!< Indicates if profiler is attached
+      uint32_t retainExternalSignals_ : 1; //!< Indicate to retain external signal array
     };
     uint32_t  state_;
   };

@@ -87,7 +87,8 @@ VirtualGPU::Queue* VirtualGPU::Queue::Create(const VirtualGPU& gpu, Pal::QueueTy
     cmdCreateInfo.engineType = qCreateInfo.engineType = Pal::EngineTypeCompute;
     qCreateInfo.priority = Pal::QueuePriority::Medium;
   } else if (amd::CommandQueue::RealTimeDisabled != rtCU) {
-    qCreateInfo.numReservedCu = rtCU;
+    qCreateInfo.numReservedCu = amd::alignDown(rtCU,
+      gpu.dev().properties().engineProperties[Pal::EngineTypeCompute].dedicatedCuGranularity);
     if ((priority == amd::CommandQueue::Priority::Medium)  &&
          // If Windows HWS is enabled, then the both real time queues are allocated
          // on the same engine
@@ -623,13 +624,13 @@ void VirtualGPU::MemoryDependency::validate(VirtualGPU& gpu, const Memory* memor
 
 void VirtualGPU::MemoryDependency::clear(bool all) {
   if (numMemObjectsInQueue_ > 0) {
-    size_t i, j;
     if (all) {
       endMemObjectsInQueue_ = numMemObjectsInQueue_;
     }
 
     // If the current launch didn't start from the beginning, then move the data
     if (0 != endMemObjectsInQueue_) {
+      size_t i, j;
       // Preserve all objects from the current kernel
       for (i = 0, j = endMemObjectsInQueue_; j < numMemObjectsInQueue_; i++, j++) {
         memObjectsInQueue_[i].start_ = memObjectsInQueue_[j].start_;
@@ -2552,8 +2553,7 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes, const 
     Pal::DispatchAqlParams dispatchParam = {};
     dispatchParam.pAqlPacket = aqlPkt;
     if (hsaKernel.workGroupInfo()->scratchRegs_ > 0) {
-      const Device::ScratchBuffer* scratch = nullptr;
-      scratch = dev().scratch(hwRing());
+      const Device::ScratchBuffer* scratch = dev().scratch(hwRing());
       dispatchParam.scratchAddr = scratch->memObj_->vmAddress();
       dispatchParam.scratchSize = scratch->size_;
       dispatchParam.scratchOffset = scratch->offset_;
@@ -3639,8 +3639,7 @@ void VirtualGPU::buildKernelInfo(const HSAILKernel& hsaKernel, hsa_kernel_dispat
     kernelInfo.scratchBufferSizeInBytes = scratchBuf->size();
 
     // Get the address of the scratch buffer and its size for CPU access
-    address scratchRingAddr = nullptr;
-    scratchRingAddr = static_cast<address>(scratchBuf->map(nullptr, 0));
+    address scratchRingAddr = static_cast<address>(scratchBuf->map(nullptr, 0));
     dbgManager->setScratchRing(scratchRingAddr, scratchBuf->size());
     scratchBuf->unmap(nullptr);
   } else {

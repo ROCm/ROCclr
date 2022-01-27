@@ -283,7 +283,6 @@ void VirtualGPU::MemoryDependency::validate(VirtualGPU& gpu, const Memory* memor
 // ================================================================================================
 void VirtualGPU::MemoryDependency::clear(bool all) {
   if (numMemObjectsInQueue_ > 0) {
-    size_t i, j;
     if (all) {
       endMemObjectsInQueue_ = numMemObjectsInQueue_;
     }
@@ -291,6 +290,7 @@ void VirtualGPU::MemoryDependency::clear(bool all) {
     // If the current launch didn't start from the beginning, then move the data
     if (0 != endMemObjectsInQueue_) {
       // Preserve all objects from the current kernel
+      size_t i, j;
       for (i = 0, j = endMemObjectsInQueue_; j < numMemObjectsInQueue_; i++, j++) {
         memObjectsInQueue_[i].start_ = memObjectsInQueue_[j].start_;
         memObjectsInQueue_[i].end_ = memObjectsInQueue_[j].end_;
@@ -504,6 +504,7 @@ std::vector<hsa_signal_t>& VirtualGPU::HwQueueTracker::WaitingSignal(HwQueueEngi
     }
     external_signals_.clear();
   }
+
   // Return the array of waiting HSA signals
   return waiting_signals_;
 }
@@ -1003,10 +1004,11 @@ void VirtualGPU::ResetQueueStates() {
 
 // ================================================================================================
 bool VirtualGPU::releaseGpuMemoryFence(bool skip_cpu_wait) {
-  if (hasPendingDispatch_) {
+  if (hasPendingDispatch_ || !Barriers().IsExternalSignalListEmpty()) {
     // Dispatch barrier packet into the queue
     dispatchBarrierPacket(kBarrierPacketHeader);
     hasPendingDispatch_ = false;
+    retainExternalSignals_ = false;
   }
 
   // Check if runtime could skip CPU wait
@@ -1276,6 +1278,9 @@ void VirtualGPU::profilingBegin(amd::Command& command, bool drmProfiling) {
   }
 
   if (AMD_DIRECT_DISPATCH) {
+    if (!retainExternalSignals_) {
+      Barriers().ClearExternalSignals();
+    }
     for (auto it = command.eventWaitList().begin(); it < command.eventWaitList().end(); ++it) {
       void* hw_event = ((*it)->NotifyEvent() != nullptr) ?
         (*it)->NotifyEvent()->HwEvent() : (*it)->HwEvent();
@@ -1304,6 +1309,9 @@ void VirtualGPU::profilingEnd(amd::Command& command) {
     }
     command.setData(timestamp_);
     timestamp_ = nullptr;
+  }
+  if (AMD_DIRECT_DISPATCH) {
+    assert(retainExternalSignals_ || Barriers().IsExternalSignalListEmpty());
   }
 }
 
@@ -2988,6 +2996,7 @@ void VirtualGPU::submitKernel(amd::NDRangeKernelCommand& vcmd) {
     // Add a dependency into the current queue on the coop queue
     Barriers().AddExternalSignal(queue->Barriers().GetLastSignal());
     hasPendingDispatch_ = true;
+    retainExternalSignals_ = true;
 
     queue->profilingEnd(vcmd);
   } else {

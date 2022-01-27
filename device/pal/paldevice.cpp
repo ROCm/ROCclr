@@ -596,7 +596,10 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
     info_.numAsyncQueues_ = numComputeRings;
 
     info_.numRTQueues_ = numExclusiveComputeRings;
-    info_.numRTCUs_ = palProp.engineProperties[Pal::EngineTypeCompute].maxNumDedicatedCu;
+
+    const auto& engineProp = palProp.engineProperties[Pal::EngineTypeCompute];
+    info_.numRTCUs_ = engineProp.maxNumDedicatedCu;
+    info_.granularityRTCUs_ = engineProp.dedicatedCuGranularity;
 
     info_.threadTraceEnable_ = settings().threadTraceEnable_;
 
@@ -2352,7 +2355,7 @@ bool Device::createBlitProgram() {
   std::string extraBlits;
   std::string ocl20;
   if (amd::IS_HIP) {
-    if (info().cooperativeGroups_) { 
+    if (info().cooperativeGroups_) {
       extraBlits = GwsInitSourceCode;
     }
   }
@@ -2366,9 +2369,6 @@ bool Device::createBlitProgram() {
         extraBlits.append(SchedulerSourceCode);
       }
       ocl20 = "-cl-std=CL2.0";
-    }
-    else {
-      extraBlits = SchedulerSourceCode;
     }
   }
 
@@ -2402,12 +2402,11 @@ int32_t Device::hwDebugManagerInit(amd::Context* context, uintptr_t messageStora
 
 bool Device::SetClockMode(const cl_set_device_clock_mode_input_amd setClockModeInput,
                           cl_set_device_clock_mode_output_amd* pSetClockModeOutput) {
-  bool result = false;
   Pal::SetClockModeInput setClockMode = {};
   Pal::DeviceClockMode palClockMode =
       static_cast<Pal::DeviceClockMode>(setClockModeInput.clock_mode);
   setClockMode.clockMode = palClockMode;
-  result = (Pal::Result::Success ==
+  bool result = (Pal::Result::Success ==
             (iDev()->SetClockMode(setClockMode,
                                   reinterpret_cast<Pal::SetClockModeOutput*>(pSetClockModeOutput))))
       ? true
