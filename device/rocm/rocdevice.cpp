@@ -1075,7 +1075,8 @@ bool Device::populateOCLDeviceConstants() {
   }
 
   if (HSA_STATUS_SUCCESS !=
-      hsa_agent_get_info(_bkendDevice, (hsa_agent_info_t)HSA_AMD_AGENT_INFO_COMPUTE_UNIT_COUNT,
+      hsa_agent_get_info(_bkendDevice,
+                         (hsa_agent_info_t)HSA_AMD_AGENT_INFO_COOPERATIVE_COMPUTE_UNIT_COUNT,
                          &info_.maxComputeUnits_)) {
     return false;
   }
@@ -1084,6 +1085,17 @@ bool Device::populateOCLDeviceConstants() {
   info_.maxComputeUnits_ = settings().enableWgpMode_
       ? info_.maxComputeUnits_ / 2
       : info_.maxComputeUnits_;
+
+  if (HSA_STATUS_SUCCESS !=
+      hsa_agent_get_info(_bkendDevice, (hsa_agent_info_t)HSA_AMD_AGENT_INFO_COMPUTE_UNIT_COUNT,
+                         &info_.maxBoostComputeUnits_)) {
+    return false;
+  }
+  assert(info_.maxBoostComputeUnits_ > 0);
+
+  info_.maxBoostComputeUnits_ = settings().enableWgpMode_
+      ? info_.maxBoostComputeUnits_ / 2
+      : info_.maxBoostComputeUnits_;
 
   if (HSA_STATUS_SUCCESS != hsa_agent_get_info(_bkendDevice,
                                                (hsa_agent_info_t)HSA_AMD_AGENT_INFO_CACHELINE_SIZE,
