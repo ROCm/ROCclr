@@ -1,4 +1,4 @@
-/* Copyright (c) 2008 - 2021 Advanced Micro Devices, Inc.
+/* Copyright (c) 2008 - 2022 Advanced Micro Devices, Inc.
 
  Permission is hereby granted, free of charge, to any person obtaining a copy
  of this software and associated documentation files (the "Software"), to deal
@@ -219,6 +219,16 @@ static constexpr const char* OclExtensionsString[] = {"cl_khr_fp64 ",
                                             NULL};
 
 static constexpr int AmdVendor = 0x1002;
+
+template <typename T>
+inline void WriteAqlArgAt(unsigned char* dst, //!< The write pointer to the buffer
+                          T src,              //!< The source pointer
+                          uint size,          //!< The size in bytes to copy
+                          size_t offset       //!< The alignment to follow while writing to the buffer
+) {
+  assert(sizeof(T) == size && "Argument's size mismatches ABI!");
+  *(reinterpret_cast<T*>(dst + offset)) = src;
+}
 
 namespace device {
 class ClBinary;
@@ -1341,11 +1351,6 @@ class Isa {
     return runtimePalSupported_;
   }
 
-  /// @returns If the GSL runtime supports the ISA.
-  bool runtimeGslSupported() const {
-    return runtimeGslSupported_;
-  }
-
   /// @returns SRAM ECC feature status.
   const Feature &sramecc() const {
     return sramecc_;
@@ -1431,7 +1436,7 @@ class Isa {
  private:
 
   constexpr Isa(const char* targetId, const char* hsailId,
-                bool runtimeRocSupported, bool runtimePalSupported, bool runtimeGslSupported,
+                bool runtimeRocSupported, bool runtimePalSupported,
                 uint32_t versionMajor, uint32_t versionMinor, uint32_t versionStepping,
                 Feature sramecc, Feature xnack, uint32_t simdPerCU, uint32_t simdWidth,
                 uint32_t simdInstructionWidth, uint32_t memChannelBankWidth,
@@ -1440,7 +1445,6 @@ class Isa {
         hsailId_(hsailId),
         runtimeRocSupported_(runtimeRocSupported),
         runtimePalSupported_(runtimePalSupported),
-        runtimeGslSupported_(runtimeGslSupported),
         versionMajor_(versionMajor),
         versionMinor_(versionMinor),
         versionStepping_(versionStepping),
@@ -1467,7 +1471,6 @@ class Isa {
 
   bool runtimeRocSupported_;       //!< ROCm runtime is supported.
   bool runtimePalSupported_;       //!< PAL runtime is supported.
-  bool runtimeGslSupported_;       //!< GSL runtime is supported.
   uint32_t versionMajor_;          //!< Isa's major version.
   uint32_t versionMinor_;          //!< Isa's minor version.
   uint32_t versionStepping_;       //!< Isa's stepping version.

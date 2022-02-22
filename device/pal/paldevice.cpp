@@ -499,18 +499,16 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
              settings().useLightning_ ? ",LC" : ",HSAIL", isOnline() ? "" : " [Offline]");
 
   info_.profile_ = "FULL_PROFILE";
+  info_.spirVersions_ = "";
   if (settings().oclVersion_ >= OpenCL20) {
     info_.version_ = "OpenCL 2.0 " AMD_PLATFORM_INFO;
     info_.oclcVersion_ = "OpenCL C 2.0 ";
-    info_.spirVersions_ = "1.2";
   } else if (settings().oclVersion_ == OpenCL12) {
     info_.version_ = "OpenCL 1.2 " AMD_PLATFORM_INFO;
     info_.oclcVersion_ = "OpenCL C 1.2 ";
-    info_.spirVersions_ = "1.2";
   } else {
     info_.version_ = "OpenCL 1.0 " AMD_PLATFORM_INFO;
     info_.oclcVersion_ = "OpenCL C 1.0 ";
-    info_.spirVersions_ = "";
     LogError("Unknown version for support");
   }
 
@@ -1757,14 +1755,14 @@ bool Device::bindExternalDevice(uint flags, void* const pDevice[], void* pContex
 #ifdef _WIN32
   if (flags & amd::Context::Flags::D3D10DeviceKhr) {
     if (!associateD3D10Device(pDevice[amd::Context::DeviceFlagIdx::D3D10DeviceKhrIdx])) {
-      LogError("Failed gslD3D10Associate()");
+      LogError("Failed associateD3D10Device()");
       return false;
     }
   }
 
   if (flags & amd::Context::Flags::D3D11DeviceKhr) {
     if (!associateD3D11Device(pDevice[amd::Context::DeviceFlagIdx::D3D11DeviceKhrIdx])) {
-      LogError("Failed gslD3D11Associate()");
+      LogError("Failed associateD3D11Device()");
       return false;
     }
   }
@@ -1785,10 +1783,10 @@ bool Device::bindExternalDevice(uint flags, void* const pDevice[], void* pContex
 #endif  //_WIN32
 
   if (flags & amd::Context::Flags::GLDeviceKhr) {
-    // Attempt to associate GSL-OGL
+    // Attempt to associate PAL-OGL
     if (!glAssociate(pContext, pDevice[amd::Context::DeviceFlagIdx::GLDeviceKhrIdx])) {
       if (!validateOnly) {
-        LogError("Failed gslGLAssociate()");
+        LogError("Failed glAssociate()");
       }
       return false;
     }
@@ -1805,10 +1803,10 @@ bool Device::unbindExternalDevice(uint flags, void* const pDevice[], void* pCont
 
   void* glDevice = pDevice[amd::Context::DeviceFlagIdx::GLDeviceKhrIdx];
   if (glDevice != nullptr) {
-    // Dissociate GSL-OGL
+    // Dissociate PAL-OGL
     if (!glDissociate(pContext, glDevice)) {
       if (validateOnly) {
-        LogWarning("Failed gslGLDiassociate()");
+        LogWarning("Failed glDissociate()");
       }
       return false;
     }
