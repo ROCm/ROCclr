@@ -174,8 +174,10 @@ static void __exit() { Os::tearDown(); }
 
 void Os::tearDown() { Thread::tearDown(); }
 
-void* Os::loadLibrary_(const char* filename) {
-  return (*filename == '\0') ? NULL : ::dlopen(filename, RTLD_LAZY);
+void* Os::loadLibrary_(const char* filename, bool global) {
+  int flags = RTLD_LAZY;
+  if (global) flags |= RTLD_GLOBAL;
+  return (*filename == '\0') ? NULL : ::dlopen(filename, flags);
 }
 
 void Os::unloadLibrary(void* handle) { ::dlclose(handle); }

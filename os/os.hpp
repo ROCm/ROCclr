@@ -135,7 +135,7 @@ class Os : AllStatic {
 
  private:
   //! Load the shared library named by \a filename
-  static void* loadLibrary_(const char* filename);
+  static void* loadLibrary_(const char* filename, bool global);
 
  public:
   //! Initialize the Os package.
@@ -280,7 +280,8 @@ class Os : AllStatic {
   typedef bool (*SymbolCallback)(std::string, const void*, void*);
 
   //! Load the shared library named by \a filename
-  static void* loadLibrary(const char* filename);
+  static void* loadLibrary(const char* filename, bool global=false);
+  
   //! Unload the shared library.
   static void unloadLibrary(void* handle);
   //! Return the address of the function identified by \a name.

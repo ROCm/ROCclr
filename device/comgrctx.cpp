@@ -34,7 +34,7 @@ bool Comgr::LoadLib() {
   static constexpr const char* ComgrLibName =
     LP64_SWITCH(WINDOWS_SWITCH("amd_comgr32.dll", "libamd_comgr32.so.2"),
                 WINDOWS_SWITCH("amd_comgr.dll", "libamd_comgr.so.2"));
-  cep_.handle = Os::loadLibrary(ComgrLibName);
+  cep_.handle = Os::loadLibrary(ComgrLibName, /*global*/true);
   if (nullptr == cep_.handle) {
     ClPrint(amd::LOG_ERROR, amd::LOG_CODE, "Failed to load COMGR library.");
     return false;
