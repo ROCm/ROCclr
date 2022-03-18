@@ -97,7 +97,7 @@ __declspec(allocate(".CRT$XTU")) void (*__exit)(void) = Os::tearDown;
 
 void Os::tearDown() { Thread::tearDown(); }
 
-void* Os::loadLibrary_(const char* filename) {
+void* Os::loadLibrary_(const char* filename, bool global) {
   if (filename != NULL) {
     HMODULE hModule = ::LoadLibrary(filename);
     return hModule;

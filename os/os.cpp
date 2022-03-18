@@ -37,7 +37,7 @@
 
 namespace amd {
 
-void* Os::loadLibrary(const char* libraryname) {
+void* Os::loadLibrary(const char* libraryname, bool global) {
   void* handle;
 
   // Try with the system library prefix and extension instead.
@@ -73,7 +73,7 @@ void* Os::loadLibrary(const char* libraryname) {
 #endif
   }
 
-  handle = Os::loadLibrary_(libraryname);
+  handle = Os::loadLibrary_(libraryname, global);
   if (handle != NULL) {
     return handle;
   }
@@ -96,7 +96,7 @@ void* Os::loadLibrary(const char* libraryname) {
   }
   str.append(Os::libraryExtension());
 
-  handle = Os::loadLibrary_(str.c_str());
+  handle = Os::loadLibrary_(str.c_str(), global);
   if (handle != NULL || str.find(fileSeparator()) != std::string::npos) {
     return handle;
   }
