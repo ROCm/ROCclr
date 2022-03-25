@@ -320,7 +320,7 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
   info_.maxComputeUnits_ = settings().enableWgpMode_
       ? palProp.gfxipProperties.shaderCore.numAvailableCus / 2
       : palProp.gfxipProperties.shaderCore.numAvailableCus;
-  info_.maxBoostComputeUnits_ = info_.maxComputeUnits_;
+  info_.maxPhysicalComputeUnits_ = info_.maxComputeUnits_;
   info_.numberOfShaderEngines = palProp.gfxipProperties.shaderCore.numShaderEngines;
 
   // SI parts are scalar.  Also, reads don't need to be 128-bits to get peak rates.
@@ -1675,7 +1675,7 @@ pal::Memory* Device::createImage(amd::Memory& owner, bool directAccess) const {
   return gpuImage;
 }
 
-//! Allocates cache memory on the card
+// ================================================================================================
 device::Memory* Device::createMemory(amd::Memory& owner) const {
   bool directAccess = false;
   pal::Memory* memory = nullptr;
@@ -1706,6 +1706,17 @@ device::Memory* Device::createMemory(amd::Memory& owner) const {
   return memory;
 }
 
+// ================================================================================================
+device::Memory* Device::createMemory(size_t size) const {
+  auto buffer = new pal::Memory(*this, size);
+  if ((buffer == nullptr) || !buffer->create(Resource::Local)) {
+    LogError("Couldn't allocate memory on device!");
+    return nullptr;
+  }
+  return buffer;
+}
+
+// ================================================================================================
 bool Device::createSampler(const amd::Sampler& owner, device::Sampler** sampler) const {
   *sampler = nullptr;
   Sampler* gpuSampler = new Sampler(*this);
