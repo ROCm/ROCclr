@@ -77,11 +77,6 @@ static constexpr uint16_t kBarrierPacketHeader =
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
-static constexpr uint16_t kBarrierPacketAgentScopeHeader =
-    (HSA_PACKET_TYPE_BARRIER_AND << HSA_PACKET_HEADER_TYPE) | (1 << HSA_PACKET_HEADER_BARRIER) |
-    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
-    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
-
 static constexpr uint16_t kNopPacketHeader =
     (HSA_PACKET_TYPE_BARRIER_AND << HSA_PACKET_HEADER_TYPE) |
     (HSA_FENCE_SCOPE_NONE << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
@@ -131,7 +126,7 @@ void Timestamp::checkGpuTime() {
       }
       // Avoid profiling data for the sync barrier, in tiny performance tests the first call
       // to ROCr is very slow and that also affects the overall performance of the callback thread
-      if (command().GetBatchHead() == nullptr || command().profilingInfo().marker_ts_ > 0) {
+      if (command().GetBatchHead() == nullptr || command().profilingInfo().marker_ts_) {
         hsa_amd_profiling_dispatch_time_t time = {};
         if (it->engine_ == HwQueueEngine::Compute) {
           hsa_amd_profiling_get_dispatch_time(gpu()->gpu_device(), it->signal_, &time);
@@ -450,7 +445,7 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
         // Update the current command/marker with HW event
         prof_signal->retain();
         ts->command().SetHwEvent(prof_signal);
-      } else if (ts->command().profilingInfo().marker_ts_ > 0 ) {
+      } else if (ts->command().profilingInfo().marker_ts_ ) {
         // Update the current command/marker with HW event
         prof_signal->retain();
         ts->command().SetHwEvent(prof_signal);
@@ -811,9 +806,6 @@ bool VirtualGPU::dispatchGenericAqlPacket(
   uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, size);
   uint64_t read = hsa_queue_load_read_index_relaxed(gpu_queue_);
 
-  auto cache_state = extractAqlBits(header, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
-                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
-
   if (timestamp_ != nullptr) {
     // Get active signal for current dispatch if profiling is necessary
     packet->completion_signal = Barriers().ActiveSignal(kInitSignalValueOne, timestamp_);
@@ -854,7 +846,8 @@ bool VirtualGPU::dispatchGenericAqlPacket(
                            HSA_PACKET_HEADER_WIDTH_BARRIER),
             extractAqlBits(header, HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE,
                            HSA_PACKET_HEADER_WIDTH_SCACQUIRE_FENCE_SCOPE),
-            cache_state,
+            extractAqlBits(header, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
+                           HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE),
             rest, reinterpret_cast<hsa_kernel_dispatch_packet_t*>(packet)->grid_size_x,
             reinterpret_cast<hsa_kernel_dispatch_packet_t*>(packet)->grid_size_y,
             reinterpret_cast<hsa_kernel_dispatch_packet_t*>(packet)->grid_size_z,
@@ -870,8 +863,6 @@ bool VirtualGPU::dispatchGenericAqlPacket(
 
   //hsa_queue_store_write_index_release(gpu_queue_, index);
   hsa_signal_store_screlease(gpu_queue_->doorbell_signal, index - 1);
-
-  roc_device_.SetCacheState(static_cast<Device::CacheState>(cache_state));
 
   // Wait on signal ?
   if (blocking) {
@@ -967,8 +958,6 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
   uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, 1);
   uint64_t read = hsa_queue_load_read_index_relaxed(gpu_queue_);
 
-  auto cache_state = extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
-                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
   if (!skipSignal) {
     // Get active signal for current dispatch if profiling is necessary
     barrier_packet_.completion_signal =
@@ -996,13 +985,11 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
                          HSA_PACKET_HEADER_WIDTH_BARRIER),
           extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE,
                          HSA_PACKET_HEADER_WIDTH_SCACQUIRE_FENCE_SCOPE),
-          cache_state,
+          extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
+                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE),
           barrier_packet_.dep_signal[0], barrier_packet_.dep_signal[1],
           barrier_packet_.dep_signal[2], barrier_packet_.dep_signal[3],
           barrier_packet_.dep_signal[4], barrier_packet_.completion_signal);
-
-  roc_device_.SetCacheState(static_cast<Device::CacheState>(cache_state));
-
   // Clear dependent signals for the next packet
   barrier_packet_.dep_signal[0] = hsa_signal_t{};
   barrier_packet_.dep_signal[1] = hsa_signal_t{};
@@ -2332,12 +2319,7 @@ void VirtualGPU::dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t
   unsigned int* headerPtr = reinterpret_cast<unsigned int*>(&header);
   __atomic_store_n(reinterpret_cast<uint32_t*>(aql_loc), *headerPtr, __ATOMIC_RELEASE);
 
-  auto cache_state = extractAqlBits(header.header, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
-                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
-
   hsa_signal_store_screlease(gpu_queue_->doorbell_signal, index);
-  roc_device_.SetCacheState(static_cast<Device::CacheState>(cache_state));
-
   ClPrint(amd::LOG_DEBUG, amd::LOG_AQL,
           "HWq=0x%zx, BarrierValue Header = 0x%x AmdFormat = 0x%x ",
           "(type=%d, barrier=%d, acquire=%d, release=%d), "
@@ -2347,7 +2329,8 @@ void VirtualGPU::dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t
           extractAqlBits(header.header, HSA_PACKET_HEADER_BARRIER, HSA_PACKET_HEADER_WIDTH_BARRIER),
           extractAqlBits(header.header, HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE,
                          HSA_PACKET_HEADER_WIDTH_SCACQUIRE_FENCE_SCOPE),
-          cache_state,
+          extractAqlBits(header.header, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
+                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE),
           packet->completion_signal, packet->value, packet->mask, packet->cond,
           HSA_SIGNAL_CONDITION_GTE, HSA_SIGNAL_CONDITION_EQ, HSA_SIGNAL_CONDITION_NE);
 }
@@ -3129,16 +3112,10 @@ void VirtualGPU::submitMarker(amd::Marker& vcmd) {
     } else {
       profilingBegin(vcmd);
       if (timestamp_ != nullptr) {
-        uint32_t releaseFlags = vcmd.profilingInfo().marker_ts_;
-        if (ROC_EVENT_NO_FLUSH && releaseFlags == Device::CacheState::kCacheStateIgnore) {
-          dispatchBarrierPacket(kNopPacketHeader, false);
-        } else if (releaseFlags == Device::CacheState::kCacheStateAgent) {
-          dispatchBarrierPacket(kBarrierPacketAgentScopeHeader, false);
-        } else {
-          // Submit a barrier with a cache flushes.
-          dispatchBarrierPacket(kBarrierPacketHeader, false);
-          hasPendingDispatch_ = false;
-        }
+        // Submit a barrier with a cache flushes.
+        dispatchBarrierPacket(kBarrierPacketHeader, false);
+
+        hasPendingDispatch_ = false;
       }
       profilingEnd(vcmd);
     }
