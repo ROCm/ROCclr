@@ -50,8 +50,7 @@ Event::Event(HostQueue& queue)
       notify_event_(nullptr),
       device_(&queue.device()),
       profilingInfo_(IS_PROFILER_ON || queue.properties().test(CL_QUEUE_PROFILING_ENABLE) ||
-                     Agent::shouldPostEventEvents()),
-      event_scope_(Device::kCacheStateInvalid) {
+                     Agent::shouldPostEventEvents()) {
   notified_.clear();
 }
 
@@ -61,8 +60,7 @@ Event::Event()
       status_(CL_SUBMITTED),
       hw_event_(nullptr),
       notify_event_(nullptr),
-      device_(nullptr),
-      event_scope_(Device::kCacheStateInvalid) {
+      device_(nullptr) {
   notified_.clear();
 }
 
@@ -368,7 +366,7 @@ void Command::enqueue() {
       EnableProfiling();
     }
 
-    if (isMarker && (!profilingInfo().marker_ts_)) {
+    if (isMarker && (profilingInfo().marker_ts_ == 0)) {
       // Update batch head for the current marker. Hence the status of all commands can be
       // updated upon the marker completion
       SetBatchHead(queue_->GetSubmittionBatch());
@@ -422,7 +420,7 @@ NDRangeKernelCommand::NDRangeKernelCommand(HostQueue& queue, const EventWaitList
     profilingInfo_.enabled_ = true;
     profilingInfo_.clear();
     profilingInfo_.callback_ = nullptr;
-    profilingInfo_.marker_ts_ = true;
+    profilingInfo_.marker_ts_ = 1;
   }
   kernel_.retain();
 }
