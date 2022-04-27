@@ -97,6 +97,8 @@ class Event : public RuntimeObject {
   void*  hw_event_;                        //!< HW event ID associated with SW event
   Event* notify_event_;                    //!< Notify event, which should contain HW signal
   const Device* device_;                   //!< Device, this event associated with
+  int32_t event_scope_;                    //!< 2 - system scope, 1 - device scope,
+                                           //!< 0 - ignore, -1 - invalid
 
  protected:
   static const EventWaitList nullWaitList;
@@ -113,10 +115,11 @@ class Event : public RuntimeObject {
     uint64_t submitted_;
     uint64_t start_;
     uint64_t end_;
-    bool enabled_;    //!< Profiling enabled for the wave limiter
-    uint32_t waves_;  //!< The number of waves used in a dispatch
+    bool enabled_;        //!< Profiling enabled for the wave limiter
+    uint32_t waves_;      //!< The number of waves used in a dispatch
     ProfilingCallback* callback_;
-    bool marker_ts_;
+    bool marker_ts_;      //!< TS marker
+
     void clear() {
       queued_ = 0ULL;
       submitted_ = 0ULL;
@@ -223,6 +226,12 @@ class Event : public RuntimeObject {
 
   //! Returns notify even associated with the current command
   Event* NotifyEvent() const { return notify_event_; }
+
+  //! Get release scope of the event
+  int32_t getEventScope() const { return event_scope_; }
+
+  //! Set release scope for the event
+  void setEventScope(int32_t scope) { event_scope_ = scope; }
 };
 
 /*! \brief An operation that is submitted to a command queue.

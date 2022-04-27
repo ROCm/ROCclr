@@ -207,6 +207,25 @@ class NullDevice : public amd::Device {
     ShouldNotReachHere();
     return;
   }
+  virtual void* virtualAlloc(void* addr, size_t size, size_t alignment) {
+    ShouldNotReachHere();
+    return nullptr;
+  }
+
+  virtual void virtualFree(void* addr) {
+    ShouldNotReachHere();
+    return;
+  }
+
+  virtual void virtualMap(void* addr, amd::Memory& mem, size_t size) {
+    ShouldNotReachHere();
+    return;
+  }
+
+  virtual void virtualUnmap(void* addr, size_t size) {
+    ShouldNotReachHere();
+    return;
+  }
 
   //! Determine if we can use device memory for SVM
   const bool forceFineGrain(amd::Memory* memory) const {
@@ -259,6 +278,9 @@ class NullDevice : public amd::Device {
       cl_set_device_clock_mode_output_amd* pSetClockModeOutput) { return true; }
 
   virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const { return false; }
+  virtual void getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* end) const {};
+  virtual bool IsCacheFlushed(Device::CacheState state) const { return false; };
+  virtual void SetCacheState(Device::CacheState state) {};
   virtual void ReleaseGlobalSignal(void* signal) const {}
 
 #if defined(__clang__)
@@ -434,10 +456,18 @@ class Device : public NullDevice {
   virtual bool GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
                                 size_t num_attributes, const void* dev_ptr, size_t count) const;
 
+  virtual void* virtualAlloc(void* addr, size_t size, size_t alignment);
+  virtual void virtualFree(void* addr);
+  virtual void virtualMap(void* addr, amd::Memory& mem, size_t size);
+  virtual void virtualUnmap(void* addr, size_t size);
+
   virtual bool SetClockMode(const cl_set_device_clock_mode_input_amd setClockModeInput,
                             cl_set_device_clock_mode_output_amd* pSetClockModeOutput);
 
   virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const;
+  virtual void getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* end) const;
+  virtual bool IsCacheFlushed(Device::CacheState state) const;
+  virtual void SetCacheState(Device::CacheState state);
   virtual void ReleaseGlobalSignal(void* signal) const;
 
   //! Allocate host memory in terms of numa policy set by user
@@ -537,9 +567,13 @@ class Device : public NullDevice {
 
   void getGlobalCUMask(std::string cuMaskStr);
 
-  virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset);
+  virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset, size_t size = 0);
 
   const uint32_t getPreferredNumaNode() const { return preferred_numa_node_; }
+  const bool isFineGrainSupported() const;
+
+  //! Returns True if memory pointer is known to ROCr (excludes HMM allocations)
+  bool IsValidAllocation(const void* dev_ptr, size_t size) const;
 
  private:
   bool create();
@@ -577,6 +611,7 @@ class Device : public NullDevice {
   hsa_amd_memory_pool_t gpuvm_segment_;
   hsa_amd_memory_pool_t gpu_fine_grained_segment_;
   hsa_signal_t prefetch_signal_;    //!< Prefetch signal, used to explicitly prefetch SVM on device
+  std::atomic<int> cache_state_;    //!< State of cache, kUnknown/kFlushedToDevice/kFlushedToSystem
 
   size_t gpuvm_segment_max_alloc_;
   size_t alloc_granularity_;
