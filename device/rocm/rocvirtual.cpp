@@ -2214,8 +2214,9 @@ void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& cmd) {
 }
 
 bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const void* pattern,
-                            size_t patternSize, const amd::Coord3D& origin,
-                            const amd::Coord3D& size, bool forceBlit) {
+                            size_t patternSize, const amd::Coord3D& surface,
+                            const amd::Coord3D& origin, const amd::Coord3D& size,
+                            bool forceBlit) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
 
@@ -2241,8 +2242,9 @@ bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const 
   switch (type) {
     case CL_COMMAND_SVM_MEMFILL:
     case CL_COMMAND_FILL_BUFFER: {
-      amd::Coord3D realOrigin(origin[0]);
-      amd::Coord3D realSize(size[0]);
+      amd::Coord3D realSurf(surface[0], surface[1], surface[2]);
+      amd::Coord3D realOrigin(origin[0], origin[1], origin[2]);
+      amd::Coord3D realSize(size[0], size[1], size[2]);
       // Reprogram fill parameters if it's an IMAGE1D_BUFFER object
       if (imageBuffer) {
         size_t elemSize = amdMemory->asImage()->getImageFormat().getElementSize();
@@ -2253,7 +2255,8 @@ bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const 
         pattern = fillValue;
         patternSize = elemSize;
       }
-      result = blitMgr().fillBuffer(*memory, pattern, patternSize, realOrigin, realSize, entire, forceBlit);
+      result = blitMgr().fillBuffer(*memory, pattern, patternSize, realSurf, realOrigin,
+                                    realSize, entire, forceBlit);
       break;
     }
     case CL_COMMAND_FILL_IMAGE: {
@@ -2278,30 +2281,9 @@ void VirtualGPU::submitFillMemory(amd::FillMemoryCommand& cmd) {
   amd::ScopedLock lock(execution());
 
   profilingBegin(cmd);
-  if (cmd.type() == CL_COMMAND_FILL_IMAGE) {
-    if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(),
-        cmd.origin(), cmd.size())) {
-      cmd.setStatus(CL_INVALID_OPERATION);
-    }
-  } else {
-    size_t width  = cmd.size().c[0];
-    size_t height = cmd.size().c[1];
-    size_t depth  = cmd.size().c[2];
-    size_t pitch  = cmd.surface().c[0];
-    amd::Coord3D origin = cmd.origin();
-    amd::Coord3D region{cmd.surface().c[1], cmd.surface().c[2], depth};
-    amd::BufferRect rect;
-    rect.create(static_cast<size_t*>(origin), static_cast<size_t*>(region),
-        pitch, 0);
-    for (size_t slice = 0; slice < depth; slice++) {
-      for (size_t row = 0; row < height; row++) {
-        const size_t rowOffset = rect.offset(0, row, slice);
-        if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(),
-            amd::Coord3D{rowOffset, 0, 0}, amd::Coord3D{width, 1, 1})) {
-          cmd.setStatus(CL_INVALID_OPERATION);
-        }
-      }
-    }
+  if (!fillMemory(cmd.type(), &cmd.memory(), cmd.pattern(), cmd.patternSize(),
+    cmd.surface(), cmd.origin(), cmd.size())) {
+    cmd.setStatus(CL_INVALID_OPERATION);
   }
   profilingEnd(cmd);
 }
@@ -2639,7 +2621,7 @@ bool VirtualGPU::createVirtualQueue(uint deviceQueueSize)
   amd::Coord3D origin(0, 0, 0);
   amd::Coord3D region(virtualQueue_->getSize(), 1, 1);
 
-  if (!dev().xferMgr().fillBuffer(*vqMem, &pattern, sizeof(pattern), origin, region)) {
+  if (!dev().xferMgr().fillBuffer(*vqMem, &pattern, sizeof(pattern), region, origin, region)) {
     return false;
   }
 
