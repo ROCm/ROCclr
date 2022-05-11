@@ -81,16 +81,6 @@ inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false) {
   return true;
 }
 
-inline void fetchSignalTime(hsa_signal_t signal, hsa_agent_t gpu_device,
-                            uint64_t* start, uint64_t* end) {
-  if (start != nullptr && end != nullptr) {
-    hsa_amd_profiling_dispatch_time_t time = {};
-    hsa_amd_profiling_get_dispatch_time(gpu_device, signal, &time);
-    *start = time.start;
-    *end = time.end;
-  }
-}
-
 // Timestamp for keeping track of some profiling information for various commands
 // including EnqueueNDRangeKernel and clEnqueueCopyBuffer.
 class Timestamp : public amd::ReferenceCountedObject {
@@ -121,10 +111,14 @@ class Timestamp : public amd::ReferenceCountedObject {
 
   ~Timestamp() {}
 
-  void getTime(uint64_t* start, uint64_t* end) {
+  uint64_t getStart() {
     checkGpuTime();
-    *start = start_;
-    *end = end_;
+    return start_;
+  }
+
+  uint64_t getEnd() {
+    checkGpuTime();
+    return end_;
   }
 
   void AddProfilingSignal(ProfilingSignal* signal) { signals_.push_back(signal); }

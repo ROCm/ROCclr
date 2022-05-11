@@ -412,41 +412,30 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
     ts->retain();
     prof_signal->ts_ = ts;
     ts->AddProfilingSignal(prof_signal);
-    if (AMD_DIRECT_DISPATCH) {
-      bool enqueHandler= false;
+    // If direct dispatch is enabled and the batch head isn't null, then it's a marker and
+    // requires the batch update upon HSA signal completion
+    if (AMD_DIRECT_DISPATCH && (ts->command().GetBatchHead() != nullptr) &&
+        !ts->command().CpuWaitRequested()) {
       uint32_t init_value = kInitSignalValueOne;
-      enqueHandler = (ts->command().Callback() != nullptr ||
-                      ts->command().GetBatchHead() != nullptr )  &&
-                      !ts->command().CpuWaitRequested();
-      // If direct dispatch is enabled and the batch head isn't null, then it's a marker and
-      // requires the batch update upon HSA signal completion
-      if (enqueHandler) {
-        uint32_t init_value = kInitSignalValueOne;
-        // If API callback is enabled, then use a blocking signal for AQL queue.
-        // HSA signal will be acquired in SW and released after HSA signal callback
-        if (ts->command().Callback() != nullptr) {
-          ts->SetCallbackSignal(prof_signal->signal_);
-          // Blocks AQL queue from further processing
-          hsa_signal_add_relaxed(prof_signal->signal_, 1);
-          init_value += 1;
-        }
-        hsa_status_t result = hsa_amd_signal_async_handler(prof_signal->signal_,
-            HSA_SIGNAL_CONDITION_LT, init_value, &HsaAmdSignalHandler, ts);
-        if (HSA_STATUS_SUCCESS != result) {
-          LogError("hsa_amd_signal_async_handler() failed to set the handler!");
-        } else {
-          ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Set Handler: handle(0x%lx), timestamp(%p)",
-            prof_signal->signal_.handle, prof_signal);
-        }
-
-        // Update the current command/marker with HW event
-        prof_signal->retain();
-        ts->command().SetHwEvent(prof_signal);
-      } else if (ts->command().profilingInfo().marker_ts_ ) {
-        // Update the current command/marker with HW event
-        prof_signal->retain();
-        ts->command().SetHwEvent(prof_signal);
+      // If API callback is enabled, then use a blocking signal for AQL queue.
+      // HSA signal will be acquired in SW and released after HSA signal callback
+      if (ts->command().Callback() != nullptr) {
+        ts->SetCallbackSignal(prof_signal->signal_);
+        // Blocks AQL queue from further processing
+        hsa_signal_add_relaxed(prof_signal->signal_, 1);
+        init_value += 1;
       }
+      hsa_status_t result = hsa_amd_signal_async_handler(prof_signal->signal_,
+          HSA_SIGNAL_CONDITION_LT, init_value, &HsaAmdSignalHandler, ts);
+      if (HSA_STATUS_SUCCESS != result) {
+        LogError("hsa_amd_signal_async_handler() failed to set the handler!");
+      } else {
+        ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Set Handler: handle(0x%lx), timestamp(%p)",
+          prof_signal->signal_.handle, prof_signal);
+      }
+      // Update the current command/marker with HW event
+      prof_signal->retain();
+      ts->command().SetHwEvent(prof_signal);
     }
     if (!sdma_profiling_) {
       hsa_amd_profiling_async_copy_enable(true);
@@ -529,7 +518,7 @@ bool VirtualGPU::HwQueueTracker::CpuWaitForSignal(ProfilingSignal* signal) {
     ts->checkGpuTime();
     ts->release();
     signal->ts_ = nullptr;
-  } else if (hsa_signal_load_relaxed(signal->signal_) > 0) {
+  } else if (!signal->done_) {
     amd::ScopedLock lock(signal->LockSignalOps());
     ClPrint(amd::LOG_DEBUG, amd::LOG_COPY, "Host wait on completion_signal=0x%zx",
             signal->signal_.handle);
@@ -1357,7 +1346,8 @@ void VirtualGPU::updateCommandsState(amd::Command* list) const {
     while (current != nullptr) {
       if (current->data() != nullptr) {
         ts = reinterpret_cast<Timestamp*>(current->data());
-        ts->getTime(&startTimeStamp, &endTimeStamp);
+        startTimeStamp = ts->getStart();
+        endTimeStamp = ts->getStart();
         break;
       }
       current = current->getNext();
@@ -1382,7 +1372,8 @@ void VirtualGPU::updateCommandsState(amd::Command* list) const {
         // Since this is a valid command to get a timestamp, we use the
         // timestamp provided by the runtime (saved in the data())
         ts = reinterpret_cast<Timestamp*>(current->data());
-        ts->getTime(&startTimeStamp, &endTimeStamp);
+        startTimeStamp = ts->getStart();
+        endTimeStamp = ts->getEnd();
         ts->release();
         current->setData(nullptr);
       } else {
@@ -1407,8 +1398,6 @@ void VirtualGPU::updateCommandsState(amd::Command* list) const {
     current = next;
   }
 }
-
-// ================================================================================================
 
 void VirtualGPU::submitReadMemory(amd::ReadMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
