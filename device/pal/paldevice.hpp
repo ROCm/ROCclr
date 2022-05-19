@@ -27,6 +27,7 @@
 #include "platform/perfctr.hpp"
 #include "platform/threadtrace.hpp"
 #include "platform/memory.hpp"
+#include "platform/runtime.hpp"
 #include "utils/concurrent.hpp"
 #include "thread/thread.hpp"
 #include "thread/monitor.hpp"
@@ -143,6 +144,9 @@ class NullDevice : public amd::Device {
     return NULL;
   }
   virtual void svmFree(void* ptr) const { return; }
+  virtual void* virtualAlloc(void* addr, size_t size, size_t alignment) { return nullptr; };
+  virtual void virtualFree(void* addr) { };
+
   virtual bool importExtSemaphore(void** extSemaphore,const amd::Os::FileDesc& handle) { return false; }
   virtual void DestroyExtSemaphore(void* extSemaphore) { }
 
@@ -400,8 +404,12 @@ class Device : public NullDevice {
   //! Free resource cache on device if OCL context was destroyed.
   //! @note: Backend device doesn't track resources per context and releases all resources, regardless
   //! the number of still active contexts
-  virtual void ContextDestroy() { resourceCache().free(); }
-
+  virtual void ContextDestroy() {
+    // The if condition is a best effort to avoid crash if the function is called after DLL detached
+    if (!amd::Runtime::isLibraryDetached()) {
+      resourceCache().free();
+    }
+  }
   //! Validates kernel before execution
   virtual bool validateKernel(const amd::Kernel& kernel,  //!< AMD kernel object
                               const device::VirtualDevice* vdev, bool coop_group = false);
@@ -516,6 +524,9 @@ class Device : public NullDevice {
 
   //! SVM free
   virtual void svmFree(void* ptr) const;
+
+  virtual void* virtualAlloc(void* addr, size_t size, size_t alignment);
+  virtual void virtualFree(void* addr);
 
   //! Returns SRD manger object
   SrdManager& srds() const { return *srdManager_; }

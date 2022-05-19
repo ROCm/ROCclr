@@ -46,6 +46,7 @@
 namespace amd {
 
 volatile bool Runtime::initialized_ = false;
+bool Runtime::LibraryDetached = false;
 
 bool Runtime::init() {
   if (initialized_) {
@@ -74,7 +75,7 @@ bool Runtime::init() {
   if (!Flag::init() || !option::init() || !Device::init()
       // Agent initializes last
       || !Agent::init()) {
-    ClPrint(LOG_ERROR, LOG_INIT, "Runtime initilization failed");
+    ClPrint(LOG_ERROR, LOG_INIT, "Runtime initialization failed");
     return false;
   }
 
@@ -118,41 +119,5 @@ uint ReferenceCountedObject::release() {
   }
   return newCount;
 }
-
-#ifdef _WIN32
-#ifdef DEBUG
-static int reportHook(int reportType, char* message, int* returnValue) {
-  if (returnValue) {
-    *returnValue = 1;
-  }
-  std::cerr << message;
-  ::exit(3);
-  return TRUE;
-}
-#endif  // DEBUG
-
-extern "C" BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved) {
-  switch (reason) {
-    case DLL_PROCESS_ATTACH:
-#ifdef DEBUG
-      if (!::getenv("AMD_OCL_ENABLE_MESSAGE_BOX")) {
-        _CrtSetReportHook(reportHook);
-        _set_error_mode(_OUT_TO_STDERR);
-      }
-#endif  // DEBUG
-      break;
-    case DLL_PROCESS_DETACH:
-      amd::shutDown();
-      break;
-    case DLL_THREAD_DETACH: {
-      amd::Thread* thread = amd::Thread::current();
-      delete thread;
-    } break;
-    default:
-      break;
-  }
-  return true;
-}
-#endif
 
 }  // namespace amd

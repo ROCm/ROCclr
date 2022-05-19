@@ -231,6 +231,7 @@ class KernelBlitManager : public DmaBlitManager {
  public:
   enum {
     FillBufferAligned = 0,
+    FillBufferAligned2D,
     BlitCopyBuffer,
     BlitCopyBufferAligned,
     BlitCopyBufferRect,
@@ -366,11 +367,46 @@ class KernelBlitManager : public DmaBlitManager {
   virtual bool fillBuffer(device::Memory& memory,      //!< Memory object to fill with pattern
                           const void* pattern,         //!< Pattern data
                           size_t patternSize,          //!< Pattern size
+                          const amd::Coord3D& surface, //!< Whole Surface of mem object.
                           const amd::Coord3D& origin,  //!< Destination origin
                           const amd::Coord3D& size,    //!< Size of the fill region
                           bool entire = false,         //!< Entire buffer will be updated
                           bool forceBlit = false       //!< Force GPU Blit for fill
   ) const;
+
+  //! Fills a buffer memory with a pattern data
+  virtual bool fillBuffer1D(device::Memory& memory,      //!< Memory object to fill with pattern
+                            const void* pattern,         //!< Pattern data
+                            size_t patternSize,          //!< Pattern size
+                            const amd::Coord3D& surface, //!< Whole Surface of mem object.
+                            const amd::Coord3D& origin,  //!< Destination origin
+                            const amd::Coord3D& size,    //!< Size of the fill region
+                            bool entire = false,         //!< Entire buffer will be updated
+                            bool forceBlit = false       //!< Force GPU Blit for fill
+  ) const;
+
+  //! Fills a buffer memory with a pattern data
+  virtual bool fillBuffer2D(device::Memory& memory,      //!< Memory object to fill with pattern
+                            const void* pattern,         //!< Pattern data
+                            size_t patternSize,          //!< Pattern size
+                            const amd::Coord3D& surface, //!< Whole Surface of mem object.
+                            const amd::Coord3D& origin,  //!< Destination origin
+                            const amd::Coord3D& size,    //!< Size of the fill region
+                            bool entire = false,         //!< Entire buffer will be updated
+                            bool forceBlit = false       //!< Force GPU Blit for fill
+  ) const;
+
+    //! Fills a buffer memory with a pattern data
+  virtual bool fillBuffer3D(device::Memory& memory,      //!< Memory object to fill with pattern
+                            const void* pattern,         //!< Pattern data
+                            size_t patternSize,          //!< Pattern size
+                            const amd::Coord3D& surface, //!< Whole Surface of mem object.
+                            const amd::Coord3D& origin,  //!< Destination origin
+                            const amd::Coord3D& size,    //!< Size of the fill region
+                            bool entire = false,         //!< Entire buffer will be updated
+                            bool forceBlit = false       //!< Force GPU Blit for fill
+  ) const;
+
 
   //! Fills an image memory with a pattern data
   virtual bool fillImage(device::Memory& dstMemory,   //!< Memory object to fill with pattern
@@ -393,12 +429,14 @@ class KernelBlitManager : public DmaBlitManager {
   //! Stream memory write operation - Write a 'value' at 'memory'.
   bool streamOpsWrite(device::Memory& memory, //!< Memory to write the 'value'
                              uint64_t value,
+                             size_t offset,
                              size_t sizeBytes
   ) const;
 
   //! Stream memory ops- Waits for a 'value' at 'memory' and wait is released based on compare op.
   bool streamOpsWait(device::Memory& memory, //!< Memory contents to compare the 'value' against
                              uint64_t value,
+                             size_t offset,
                              size_t sizeBytes,
                              uint64_t flags,
                              uint64_t mask
@@ -447,7 +485,7 @@ class KernelBlitManager : public DmaBlitManager {
   void releaseArguments(address args) const;
 
   inline void setArgument(amd::Kernel* kernel, size_t index,
-                          size_t size, const void* value, uint32_t offset = 0,
+                          size_t size, const void* value, size_t offset = 0,
                           const device::Memory* dev_mem = nullptr) const;
 
   uint32_t ConstantBufferOffset() const {
@@ -483,15 +521,16 @@ class KernelBlitManager : public DmaBlitManager {
 };
 
 static const char* BlitName[KernelBlitManager::BlitTotal] = {
-  "__amd_rocclr_fillBufferAligned", "__amd_rocclr_copyBuffer", "__amd_rocclr_copyBufferAligned",
-  "__amd_rocclr_copyBufferRect", "__amd_rocclr_copyBufferRectAligned",
-  "__amd_rocclr_streamOpsWrite", "__amd_rocclr_streamOpsWait", "__amd_rocclr_scheduler",
-  "__amd_rocclr_gwsInit", "__amd_rocclr_fillImage", "__amd_rocclr_copyImage",
-  "__amd_rocclr_copyImage1DA", "__amd_rocclr_copyImageToBuffer", "__amd_rocclr_copyBufferToImage",
+  "__amd_rocclr_fillBufferAligned", "__amd_rocclr_fillBufferAligned2D", "__amd_rocclr_copyBuffer",
+  "__amd_rocclr_copyBufferAligned", "__amd_rocclr_copyBufferRect",
+  "__amd_rocclr_copyBufferRectAligned", "__amd_rocclr_streamOpsWrite", "__amd_rocclr_streamOpsWait",
+  "__amd_rocclr_scheduler", "__amd_rocclr_gwsInit", "__amd_rocclr_fillImage",
+  "__amd_rocclr_copyImage", "__amd_rocclr_copyImage1DA", "__amd_rocclr_copyImageToBuffer",
+  "__amd_rocclr_copyBufferToImage"
 };
 
 inline void KernelBlitManager::setArgument(amd::Kernel* kernel, size_t index,
-                                           size_t size, const void* value, uint32_t offset,
+                                           size_t size, const void* value, size_t offset,
                                            const device::Memory* dev_mem) const {
   const amd::KernelParameterDescriptor& desc = kernel->signature().at(index);
 

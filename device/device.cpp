@@ -522,11 +522,6 @@ bool Device::create(const Isa &isa) {
   if (nullptr == vaCacheMap_) {
     return false;
   }
-  if (amd::IS_HIP) {
-    // Allocate initial heap for device memory allocator
-    static constexpr size_t HeapBufferSize = 1024 * Ki;
-    heap_buffer_ = createMemory(HeapBufferSize);
-  }
   return true;
 }
 
@@ -1078,7 +1073,7 @@ bool ClBinary::setElfOut(unsigned char eclass,
   if ((elfOut_ == nullptr) || !elfOut_->isSuccessful()) {
     delete elfOut_;
     elfOut_ = nullptr;
-    LogError("Creating ouput ELF object failed");
+    LogError("Creating output ELF object failed");
     return false;
   }
 

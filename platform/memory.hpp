@@ -40,6 +40,7 @@
 #define CL_MEM_FOLLOW_USER_NUMA_POLICY              (1u << 31)
 #define ROCCLR_MEM_HSA_SIGNAL_MEMORY                (1u << 30)
 #define ROCCLR_MEM_INTERNAL_MEMORY                  (1u << 29)
+#define CL_MEM_VA_RANGE_AMD                         (1u << 28)
 
 namespace device {
 class Memory;
@@ -138,12 +139,14 @@ class Memory : public amd::RuntimeObject {
  public:
   enum MemoryType {
     kSvmMemoryPtr = 0x1,
-    kArenaMemoryPtr = 0x2
+    kArenaMemoryPtr = 0x100
   };
 
   struct UserData
   {
-     int deviceId = 0;
+     int deviceId = 0;     //!< Device ID memory is allocated on
+     void* data = nullptr; //!< Opaque user data from CL or HIP or etc.
+     unsigned int flags = 0; //!< HIP memory flags
   };
 
  protected:

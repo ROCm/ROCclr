@@ -264,22 +264,31 @@ class HostcallListener {
   }
 
   void terminate();
-  bool initialize(const amd::Device &dev);
+  bool initSignal(const amd::Device &dev);
+  bool initDevice(const amd::Device &dev);
 };
 
 HostcallListener* hostcallListener = nullptr;
 amd::Monitor listenerLock("Hostcall listener lock");
+constexpr static uint64_t kTimeoutFloor = K * K * 4;
+constexpr static uint64_t kTimeoutCeil = K * K * 16;
 
 void HostcallListener::consumePackets() {
-  uint64_t timeout = 1024 * 1024;
+  uint64_t timeout = kTimeoutFloor;
   uint64_t signal_value = SIGNAL_INIT;
   while (true) {
     while (true) {
       uint64_t new_value = doorbell_->Wait(signal_value, device::Signal::Condition::Ne, timeout);
       if (new_value != signal_value) {
         signal_value = new_value;
+        // Reduce the timeout for quicker processing
+        timeout = timeout >> 0x1;
+        timeout = std::max(kTimeoutFloor, timeout);
         break;
       }
+      // Increase the timeout since we dont need to check as frequently
+      timeout = timeout << 0x1;
+      timeout = std::min(kTimeoutCeil, timeout);
     }
 
     if (signal_value == SIGNAL_DONE) {
@@ -334,17 +343,9 @@ void HostcallListener::removeBuffer(HostcallBuffer* buffer) {
   buffers_.erase(buffer);
 }
 
-bool HostcallListener::initialize(const amd::Device &dev) {
+bool HostcallListener::initSignal(const amd::Device &dev) {
   doorbell_ = dev.createSignal();
-#if defined(WITH_PAL_DEVICE) && !defined(_WIN32)
-  auto ws = device::Signal::WaitState::Active;
-#else
-  auto ws = device::Signal::WaitState::Blocked;
-#endif
-  if ((doorbell_ == nullptr) || !doorbell_->Init(dev, SIGNAL_INIT, ws)) {
-    return false;
-  }
-
+  initDevice(dev);
 #if defined(__clang__)
 #if __has_feature(address_sanitizer)
   urilocator = dev.createUriLocator();
@@ -361,9 +362,20 @@ bool HostcallListener::initialize(const amd::Device &dev) {
 #endif
     return false;
   }
-
   thread_.start(this);
   return true;
+}
+
+bool HostcallListener::initDevice(const amd::Device &dev) {
+#if defined(WITH_PAL_DEVICE) && !defined(_WIN32)
+  auto ws = device::Signal::WaitState::Active;
+#else
+  auto ws = device::Signal::WaitState::Blocked;
+#endif
+  if ((doorbell_ == nullptr) || !doorbell_->Init(dev, SIGNAL_INIT, ws)) {
+    return false;
+  }
+return true;
 }
 
 bool enableHostcalls(const amd::Device &dev, void* bfr, uint32_t numPackets) {
@@ -374,7 +386,7 @@ bool enableHostcalls(const amd::Device &dev, void* bfr, uint32_t numPackets) {
   amd::ScopedLock lock(listenerLock);
   if (!hostcallListener) {
     hostcallListener = new HostcallListener();
-    if (!hostcallListener->initialize(dev)) {
+    if (!hostcallListener->initSignal(dev)) {
       ClPrint(amd::LOG_ERROR, (amd::LOG_INIT | amd::LOG_QUEUE | amd::LOG_RESOURCE),
               "Failed to launch hostcall listener");
       delete hostcallListener;
@@ -383,6 +395,10 @@ bool enableHostcalls(const amd::Device &dev, void* bfr, uint32_t numPackets) {
     }
     ClPrint(amd::LOG_INFO, (amd::LOG_INIT | amd::LOG_QUEUE | amd::LOG_RESOURCE),
             "Launched hostcall listener at %p", hostcallListener);
+  } else if (!hostcallListener->initDevice(dev)) {
+    ClPrint(amd::LOG_INFO, (amd::LOG_INIT | amd::LOG_QUEUE | amd::LOG_RESOURCE),
+            "failed to initialize device for hostcall");
+    return false;
   }
   hostcallListener->addBuffer(buffer);
   ClPrint(amd::LOG_INFO, amd::LOG_QUEUE, "Registered hostcall buffer %p with listener %p", buffer,

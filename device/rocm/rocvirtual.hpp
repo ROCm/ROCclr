@@ -81,6 +81,16 @@ inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false) {
   return true;
 }
 
+inline void fetchSignalTime(hsa_signal_t signal, hsa_agent_t gpu_device,
+                            uint64_t* start, uint64_t* end) {
+  if (start != nullptr && end != nullptr) {
+    hsa_amd_profiling_dispatch_time_t time = {};
+    hsa_amd_profiling_get_dispatch_time(gpu_device, signal, &time);
+    *start = time.start;
+    *end = time.end;
+  }
+}
+
 // Timestamp for keeping track of some profiling information for various commands
 // including EnqueueNDRangeKernel and clEnqueueCopyBuffer.
 class Timestamp : public amd::ReferenceCountedObject {
@@ -111,14 +121,10 @@ class Timestamp : public amd::ReferenceCountedObject {
 
   ~Timestamp() {}
 
-  uint64_t getStart() {
+  void getTime(uint64_t* start, uint64_t* end) {
     checkGpuTime();
-    return start_;
-  }
-
-  uint64_t getEnd() {
-    checkGpuTime();
-    return end_;
+    *start = start_;
+    *end = end_;
   }
 
   void AddProfilingSignal(ProfilingSignal* signal) { signals_.push_back(signal); }
@@ -216,7 +222,7 @@ class VirtualGPU : public device::VirtualDevice {
 
     //! Finds a free signal for the upcomming operation
     hsa_signal_t ActiveSignal(hsa_signal_value_t init_val = kInitSignalValueOne,
-                              Timestamp* ts = nullptr, uint32_t queue_size = 0);
+                              Timestamp* ts = nullptr);
 
     //! Wait for the curent active signal. Can idle the queue
     bool WaitCurrent() {
@@ -376,6 +382,7 @@ class VirtualGPU : public device::VirtualDevice {
   void enableSyncBlit() const;
 
   void hasPendingDispatch() { hasPendingDispatch_ = true; }
+  bool IsPendingDispatch() const { return (hasPendingDispatch_) ? true : false; }
   void addSystemScope() { addSystemScope_ = true; }
   void SetCopyCommandType(cl_command_type type) { copy_command_type_ = type; }
 
@@ -429,6 +436,7 @@ class VirtualGPU : public device::VirtualDevice {
                   amd::Memory* amdMemory,      //!< memory object to fill
                   const void* pattern,         //!< pattern to fill the memory
                   size_t patternSize,          //!< pattern size
+                  const amd::Coord3D& surface, //!< Whole Surface of mem object.
                   const amd::Coord3D& origin,  //!< memory origin
                   const amd::Coord3D& size,    //!< memory size for filling
                   bool forceBlit = false       //!< force shader blit path

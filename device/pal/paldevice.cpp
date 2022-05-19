@@ -616,6 +616,7 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
       ClPrint(amd::LOG_INFO, amd::LOG_INIT, "Resizable bar enabled");
     }
   }
+  info_.virtualMemoryManagement_ = true;
 }
 
 Device::XferBuffers::~XferBuffers() {
@@ -1151,6 +1152,11 @@ bool Device::initializeHeapResources() {
       return false;
     }
     xferQueue_->enableSyncedBlit();
+    if (amd::IS_HIP) {
+      // Allocate initial heap for device memory allocator
+      static constexpr size_t HeapBufferSize = 1024 * Ki;
+      heap_buffer_ = createMemory(HeapBufferSize);
+    }
   }
   return true;
 }
@@ -1434,6 +1440,8 @@ pal::Memory* Device::createBuffer(amd::Memory& owner, bool directAccess) const {
     type = Resource::BusAddressable;
   } else if (owner.getMemFlags() & CL_MEM_EXTERNAL_PHYSICAL_AMD) {
     type = Resource::ExternalPhysical;
+  } else if (owner.getMemFlags() & CL_MEM_VA_RANGE_AMD) {
+    type = Resource::VaRange;
   }
 
   // Use direct access if it's possible
@@ -2225,6 +2233,40 @@ void Device::svmFree(void* ptr) const {
       svmMem->release();
       amd::MemObjMap::RemoveMemObj(ptr);
     }
+  }
+}
+
+void* Device::virtualAlloc(void* addr, size_t size, size_t alignment)
+{
+  amd::Memory* mem = nullptr;
+
+  // create a hidden buffer, which will allocated on the device later
+  mem = new (context()) amd::Buffer(context(), CL_MEM_VA_RANGE_AMD, size, addr);
+  if (mem == nullptr) {
+    LogError("failed to new a va range mem object!");
+    return nullptr;
+  }
+
+  if (!mem->create(nullptr, false)) {
+    LogError("failed to create a va range mem object");
+    mem->release();
+    return nullptr;
+  }
+  // if the device supports SVM FGS, return the committed CPU address directly.
+  pal::Memory* gpuMem = getGpuMemory(mem);
+  amd::MemObjMap::AddMemObj(mem->getSvmPtr(), mem);
+
+  void* svmPtr = mem->getSvmPtr();
+
+  return svmPtr;
+}
+
+void Device::virtualFree(void* addr)
+{
+  amd::Memory* va = amd::MemObjMap::FindMemObj(addr);
+  if (nullptr != va && (va->getMemFlags() & CL_MEM_VA_RANGE_AMD)) {
+    va->release();
+    amd::MemObjMap::RemoveMemObj(addr);
   }
 }
 

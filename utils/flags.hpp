@@ -182,7 +182,7 @@ release(bool, OCL_CODE_CACHE_RESET, false,                                    \
         "1 =  Reset the compiler code cache storage")                         \
 release_on_stg(bool, PAL_DISABLE_SDMA, false,                                 \
         "1 = Disable SDMA for PAL")                                           \
-release(uint, PAL_RGP_DISP_COUNT, 50,                                         \
+release(uint, PAL_RGP_DISP_COUNT, 10000,                                      \
         "The number of dispatches for RGP capture with SQTT")                 \
 release(uint, PAL_MALL_POLICY, 0,                                             \
         "Controls the behaviour of allocations with respect to the MALL"      \
@@ -249,6 +249,8 @@ release(bool, ROC_ENABLE_PRE_VEGA, false,                                     \
         "Enable support of pre-vega ASICs in ROCm path")                      \
 release(bool, HIP_FORCE_QUEUE_PROFILING, false,                               \
         "Force command queue profiling by default")                           \
+release(bool, HIP_MEM_POOL_SUPPORT, false,                                    \
+        "Enables memory pool support in HIP")                                 \
 release(uint, PAL_FORCE_ASIC_REVISION, 0,                                     \
         "Force a specific asic revision for all devices")                     \
 release(bool, PAL_EMBED_KERNEL_MD, false,                                     \
@@ -265,13 +267,17 @@ release(bool, AMD_CPU_AFFINITY, false,                                        \
 release(bool, ROC_USE_FGS_KERNARG, true,                                      \
         "Use fine grain kernel args segment for supported asics")             \
 release(uint, ROC_P2P_SDMA_SIZE, 1024,                                        \
-        "The minimum size in MB for P2P transfer with SDMA")                  \
+        "The minimum size in KB for P2P transfer with SDMA")                  \
 release(uint, ROC_AQL_QUEUE_SIZE, 4096,                                       \
         "AQL queue size in AQL packets")                                      \
+release(uint, ROC_SIGNAL_POOL_SIZE, 32,                                       \
+        "Initial size of HSA signal pool")                                    \
 release(bool, ROC_SKIP_KERNEL_ARG_COPY, false,                                \
         "If true, then runtime can skip kernel arg copy")                     \
 release(bool, GPU_STREAMOPS_CP_WAIT, false,                                   \
-        "Force the stream wait memory operation to wait on CP.")
+        "Force the stream wait memory operation to wait on CP.")              \
+release(bool, ROC_EVENT_NO_FLUSH, false,                                      \
+        "Use NOP AQL packet for event records with no explicit flags.")
 
 namespace amd {
 

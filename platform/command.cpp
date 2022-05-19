@@ -50,13 +50,21 @@ Event::Event(HostQueue& queue)
       notify_event_(nullptr),
       device_(&queue.device()),
       profilingInfo_(IS_PROFILER_ON || queue.properties().test(CL_QUEUE_PROFILING_ENABLE) ||
-                     Agent::shouldPostEventEvents()) {
+                     Agent::shouldPostEventEvents()),
+      event_scope_(Device::kCacheStateInvalid) {
   notified_.clear();
 }
 
 // ================================================================================================
-Event::Event() : callbacks_(NULL), status_(CL_SUBMITTED),
-    hw_event_(nullptr), notify_event_(nullptr), device_(nullptr) { notified_.clear(); }
+Event::Event()
+    : callbacks_(NULL),
+      status_(CL_SUBMITTED),
+      hw_event_(nullptr),
+      notify_event_(nullptr),
+      device_(nullptr),
+      event_scope_(Device::kCacheStateInvalid) {
+  notified_.clear();
+}
 
 // ================================================================================================
 Event::~Event() {
@@ -241,7 +249,7 @@ bool Event::awaitCompletion() {
       return false;
     }
 
-    ClPrint(LOG_DEBUG, LOG_WAIT, "waiting for event %p to complete, current status %d",
+    ClPrint(LOG_DEBUG, LOG_WAIT, "Waiting for event %p to complete, current status %d",
       this, status());
     auto* queue = command().queue();
     if ((queue != nullptr) && queue->vdev()->ActiveWait()) {
@@ -256,7 +264,7 @@ bool Event::awaitCompletion() {
         lock_.wait();
       }
     }
-    ClPrint(LOG_DEBUG, LOG_WAIT, "event %p wait completed", this);
+    ClPrint(LOG_DEBUG, LOG_WAIT, "Event %p wait completed", this);
   }
 
   return status() == CL_COMPLETE;
@@ -277,7 +285,7 @@ bool Event::notifyCmdQueue(bool cpu_wait) {
         notified_.clear();
         return false;
       }
-      ClPrint(LOG_DEBUG, LOG_CMD, "queue marker to command queue: %p", queue);
+      ClPrint(LOG_DEBUG, LOG_CMD, "Queue marker to command queue: %p", queue);
       command->enqueue();
       // Save notification, associated with the current event
       notify_event_ = command;
@@ -290,7 +298,7 @@ bool Event::notifyCmdQueue(bool cpu_wait) {
         notified_.clear();
         return false;
       }
-      ClPrint(LOG_DEBUG, LOG_CMD, "queue marker to command queue: %p", queue);
+      ClPrint(LOG_DEBUG, LOG_CMD, "Queue marker to command queue: %p", queue);
       command->enqueue();
       command->release();
     }
@@ -328,6 +336,7 @@ void Command::releaseResources() {
   }
 }
 
+static constexpr uint32_t kMarkerTsCount = 64;
 // ================================================================================================
 void Command::enqueue() {
   assert(queue_ != NULL && "Cannot be enqueued");
@@ -336,7 +345,7 @@ void Command::enqueue() {
     Agent::postEventCreate(as_cl(static_cast<Event*>(this)), type_);
   }
 
-  ClPrint(LOG_DEBUG, LOG_CMD, "command is enqueued: %p", this);
+  ClPrint(LOG_DEBUG, LOG_CMD, "Command enqueued: %p", this);
 
   // Direct dispatch logic below will submit the command immediately, but the command status
   // update will occur later after flush() with a wait
@@ -353,9 +362,22 @@ void Command::enqueue() {
     // when multiple threads submit/flush/update the batch at the same time
     ScopedLock sl(queue_->vdev()->execution());
     queue_->FormSubmissionBatch(this);
-    if ((type() == CL_COMMAND_MARKER || type() == 0)) {
+
+    bool isMarker = (type() == CL_COMMAND_MARKER || type() == 0);
+    if (isMarker) {
       // The current HSA signal tracking logic requires profiling enabled for the markers
       EnableProfiling();
+    }
+
+    bool submitBatch = !profilingInfo().marker_ts_;
+    // Flush the batch if ther marker_ts have been continuously submitted until a threashold
+    // is reached. This helps recycling the commands and frees memory.
+    if (queue_->GetMarkerTsCount() > kMarkerTsCount) {
+      submitBatch = true;
+      queue_->ResetMarkerTsCount();
+    }
+
+    if (isMarker && submitBatch) {
       // Update batch head for the current marker. Hence the status of all commands can be
       // updated upon the marker completion
       SetBatchHead(queue_->GetSubmittionBatch());
@@ -409,6 +431,8 @@ NDRangeKernelCommand::NDRangeKernelCommand(HostQueue& queue, const EventWaitList
     profilingInfo_.enabled_ = true;
     profilingInfo_.clear();
     profilingInfo_.callback_ = nullptr;
+    profilingInfo_.marker_ts_ = true;
+    setEventScope(amd::Device::kCacheStateSystem);
   }
   kernel_.retain();
 }

@@ -207,6 +207,15 @@ class NullDevice : public amd::Device {
     ShouldNotReachHere();
     return;
   }
+  virtual void* virtualAlloc(void* addr, size_t size, size_t alignment) {
+    ShouldNotReachHere();
+    return nullptr;
+  }
+
+  virtual void virtualFree(void* addr) {
+    ShouldNotReachHere();
+    return;
+  }
 
   //! Determine if we can use device memory for SVM
   const bool forceFineGrain(amd::Memory* memory) const {
@@ -259,6 +268,9 @@ class NullDevice : public amd::Device {
       cl_set_device_clock_mode_output_amd* pSetClockModeOutput) { return true; }
 
   virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const { return false; }
+  virtual void getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* end) const {};
+  virtual bool IsCacheFlushed(Device::CacheState state) const { return false; };
+  virtual void SetCacheState(Device::CacheState state) {};
   virtual void ReleaseGlobalSignal(void* signal) const {}
 
 #if defined(__clang__)
@@ -345,13 +357,16 @@ class Device : public NullDevice {
 
   static bool loadHsaModules();
 
-  hsa_agent_t getBackendDevice() const { return _bkendDevice; }
+  hsa_agent_t getBackendDevice() const { return bkendDevice_; }
   const hsa_agent_t &getCpuAgent() const { return cpu_agent_; } // Get the CPU agent with the least NUMA distance to this GPU
 
   static const std::vector<hsa_agent_t>& getGpuAgents() { return gpu_agents_; }
   static const std::vector<AgentInfo>& getCpuAgents() { return cpu_agents_; }
 
   void setupCpuAgent(); // Setup the CPU agent which has the least NUMA distance to this GPU
+
+  void checkAtomicSupport(); //!< Check the support for pcie atomics
+
   //! Destructor for the physical HSA device
   virtual ~Device();
 
@@ -434,10 +449,16 @@ class Device : public NullDevice {
   virtual bool GetSvmAttributes(void** data, size_t* data_sizes, int* attributes,
                                 size_t num_attributes, const void* dev_ptr, size_t count) const;
 
+  virtual void* virtualAlloc(void* addr, size_t size, size_t alignment);
+  virtual void virtualFree(void* addr);
+
   virtual bool SetClockMode(const cl_set_device_clock_mode_input_amd setClockModeInput,
                             cl_set_device_clock_mode_output_amd* pSetClockModeOutput);
 
   virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const;
+  virtual void getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* end) const;
+  virtual bool IsCacheFlushed(Device::CacheState state) const;
+  virtual void SetCacheState(Device::CacheState state);
   virtual void ReleaseGlobalSignal(void* signal) const;
 
   //! Allocate host memory in terms of numa policy set by user
@@ -537,9 +558,13 @@ class Device : public NullDevice {
 
   void getGlobalCUMask(std::string cuMaskStr);
 
-  virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset);
+  virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset, size_t size = 0);
 
   const uint32_t getPreferredNumaNode() const { return preferred_numa_node_; }
+  const bool isFineGrainSupported() const;
+
+  //! Returns True if memory pointer is known to ROCr (excludes HMM allocations)
+  bool IsValidAllocation(const void* dev_ptr, size_t size) const;
 
  private:
   bool create();
@@ -561,12 +586,13 @@ class Device : public NullDevice {
   static std::vector<hsa_agent_t> gpu_agents_;
   static std::vector<AgentInfo> cpu_agents_;
 
+  static amd::Monitor lockP2P_;
   hsa_agent_t cpu_agent_;
   uint32_t preferred_numa_node_;
   std::vector<hsa_agent_t> p2p_agents_;  //!< List of P2P agents available for this device
   std::vector<Device*> enabled_p2p_devices_;  //!< List of user enabled P2P devices for this device
   mutable std::mutex lock_allow_access_; //!< To serialize allow_access calls
-  hsa_agent_t _bkendDevice;
+  hsa_agent_t bkendDevice_;
   uint32_t pciDeviceId_;
   hsa_agent_t* p2p_agents_list_;
   hsa_profile_t agent_profile_;
@@ -577,6 +603,7 @@ class Device : public NullDevice {
   hsa_amd_memory_pool_t gpuvm_segment_;
   hsa_amd_memory_pool_t gpu_fine_grained_segment_;
   hsa_signal_t prefetch_signal_;    //!< Prefetch signal, used to explicitly prefetch SVM on device
+  std::atomic<int> cache_state_;    //!< State of cache, kUnknown/kFlushedToDevice/kFlushedToSystem
 
   size_t gpuvm_segment_max_alloc_;
   size_t alloc_granularity_;

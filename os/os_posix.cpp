@@ -310,11 +310,8 @@ void Os::setCurrentThreadName(const char* name) { ::prctl(PR_SET_NAME, name); }
 
 void Os::setPreferredNumaNode(uint32_t node) {
 #ifdef ROCCLR_SUPPORT_NUMA_POLICY
-  if (AMD_CPU_AFFINITY) {
-    // Set preferred node affinity mask
-    int num_cpus = numa_num_configured_cpus();
-    bitmask* bm = numa_bitmask_alloc(num_cpus);
-
+  if (AMD_CPU_AFFINITY && (numa_available() >= 0)) {
+    bitmask* bm = numa_allocate_cpumask();
     numa_node_to_cpus(node, bm);
     if (numa_sched_setaffinity(0, bm) < 0) {
       assert(0 && "failed to set affinity");
@@ -390,7 +387,7 @@ const void* Os::createOsThread(amd::Thread* thread) {
   // We never plan the use join, so free the resources now.
   ::pthread_attr_setdetachstate(&threadAttr, PTHREAD_CREATE_DETACHED);
   if (!AMD_CPU_AFFINITY) {
-    ClPrint(amd::LOG_INFO, amd::LOG_INIT, "Reseting CPU core affinities");
+    ClPrint(amd::LOG_INFO, amd::LOG_INIT, "Resetting CPU core affinities");
     cpu_set_t cpuset;
     if (processorCount_ > 0) {
       CPU_ZERO(&cpuset);
@@ -704,14 +701,14 @@ void Os::setCurrentStackPtr(address sp) {
   sp -= sizeof(void*);
   *(void**)sp = __builtin_return_address(0);
 
-#if defined(ATI_ARCH_ARM)
-  assert(!"Unimplemented");
-#else
+#if defined(ATI_ARCH_X86)
   __asm__ __volatile__(
 #if !defined(OMIT_FRAME_POINTER)
       LP64_SWITCH("movl (%%ebp),%%ebp;", "movq (%%rbp),%%rbp;")
 #endif  // !OMIT_FRAME_POINTER
           LP64_SWITCH("movl %0,%%esp; ret;", "movq %0,%%rsp; ret;")::"r"(sp));
+#else
+  assert(!"Unimplemented");
 #endif
 }
 

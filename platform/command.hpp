@@ -97,6 +97,8 @@ class Event : public RuntimeObject {
   void*  hw_event_;                        //!< HW event ID associated with SW event
   Event* notify_event_;                    //!< Notify event, which should contain HW signal
   const Device* device_;                   //!< Device, this event associated with
+  int32_t event_scope_;                    //!< 2 - system scope, 1 - device scope,
+                                           //!< 0 - ignore, -1 - invalid
 
  protected:
   static const EventWaitList nullWaitList;
@@ -113,10 +115,11 @@ class Event : public RuntimeObject {
     uint64_t submitted_;
     uint64_t start_;
     uint64_t end_;
-    bool enabled_;    //!< Profiling enabled for the wave limiter
-    uint32_t waves_;  //!< The number of waves used in a dispatch
+    bool enabled_;        //!< Profiling enabled for the wave limiter
+    uint32_t waves_;      //!< The number of waves used in a dispatch
     ProfilingCallback* callback_;
-    bool marker_ts_;
+    bool marker_ts_;      //!< TS marker
+
     void clear() {
       queued_ = 0ULL;
       submitted_ = 0ULL;
@@ -223,6 +226,12 @@ class Event : public RuntimeObject {
 
   //! Returns notify even associated with the current command
   Event* NotifyEvent() const { return notify_event_; }
+
+  //! Get release scope of the event
+  int32_t getEventScope() const { return event_scope_; }
+
+  //! Set release scope for the event
+  void setEventScope(int32_t scope) { event_scope_ = scope; }
 };
 
 /*! \brief An operation that is submitted to a command queue.
@@ -1688,6 +1697,45 @@ class SvmPrefetchAsyncCommand : public Command {
   size_t count() const { return count_; }
   amd::Device* device() const { return dev_; }
   size_t cpu_access() const { return cpu_access_; }
+};
+
+/*! \brief  A virtual map memory command.
+ *
+ */
+
+class VirtualMapCommand : public Command {
+ private:
+  const void* ptr_;     //!< Virtual address to map to the memory
+  size_t size_;         //!< Size of the mapping in bytes
+  Memory* memory_;      //!< Memory to map, nullptr means unmap
+
+ public:
+  //! Construct a new VirtualMapCommand
+  VirtualMapCommand(HostQueue& queue, const EventWaitList& eventWaitList,
+                   void* ptr, size_t size, Memory* memory)
+      : Command(queue, 1, eventWaitList),
+        ptr_(ptr),
+        size_(size),
+        memory_(memory) {
+    // Sanity checks
+    assert(size > 0 && "invalid");
+    if (memory_) memory_->retain();
+  }
+
+  virtual void releaseResources() {
+    if (memory_) memory_->release();
+    DEBUG_ONLY(memory_ = nullptr);
+    Command::releaseResources();
+  }
+
+  virtual void submit(device::VirtualDevice& device) { device.submitVirtualMap(*this); }
+
+  //! Read the memory object
+  Memory* memory() const { return memory_; }
+  //! Read the size
+  size_t size() const { return size_; }
+  //! Read the pointer
+  const void* ptr() const { return ptr_; }
 };
 
 /*! @}

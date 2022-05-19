@@ -91,6 +91,7 @@ class SvmUnmapMemoryCommand;
 class SvmPrefetchAsyncCommand;
 class TransferBufferFileCommand;
 class StreamOperationCommand;
+class VirtualMapCommand;
 class ExternalSemaphoreCmd;
 class HwDebugManager;
 class Isa;
@@ -603,6 +604,10 @@ struct Info : public amd::EmbeddedObject {
 
   //! AQL Barrier Value Packet support
   bool aqlBarrierValue_;
+
+  bool pcie_atomics_; //!< Pcie atomics support flag
+
+  bool virtualMemoryManagement_; //!< Virtual memory management support
 };
 
 //! Device settings
@@ -1234,6 +1239,7 @@ class VirtualDevice : public amd::HeapObject {
     ShouldNotReachHere();
   }
   virtual void submitStreamOperation(amd::StreamOperationCommand& cmd) { ShouldNotReachHere(); }
+  virtual void submitVirtualMap(amd::VirtualMapCommand& cmd) { ShouldNotReachHere(); }
 
   virtual void profilerAttach(bool enable) = 0;
 
@@ -1527,6 +1533,13 @@ class Device : public RuntimeObject {
     kKernArg = 2
   } MemorySegment;
 
+  typedef enum CacheState {
+    kCacheStateInvalid = -1,
+    kCacheStateIgnore = 0,
+    kCacheStateAgent = 1,
+    kCacheStateSystem = 2
+  } CacheState;
+
   typedef std::pair<LinkAttribute, int32_t /* value */> LinkAttrType;
 
   static constexpr size_t kP2PStagingSize = 4 * Mi;
@@ -1712,6 +1725,22 @@ class Device : public RuntimeObject {
   virtual void svmFree(void* ptr) const = 0;
 
   /**
+   * Reserve a VA range with no backing store
+   *
+   * @param addr Start address requested
+   * @param size Size of the range in bytes
+   * @param alignment Alignment in bytes
+   */
+  virtual void* virtualAlloc(void* addr, size_t size, size_t alignment) = 0;
+
+  /**
+   * Free a VA range
+   *
+   * @param addr Start address of the range
+   */
+  virtual void virtualFree(void* addr) = 0;
+
+  /**
    * @return True if the device successfully applied the SVM attributes in HMM for device memory
    */
   virtual bool SetSvmAttributes(const void* dev_ptr, size_t count,
@@ -1749,8 +1778,18 @@ class Device : public RuntimeObject {
     return false;
   };
 
+  // Returns bool value if the device cache is equal to the parameter
+  virtual bool IsCacheFlushed(CacheState state) const {
+    return false;
+  };
+
+  virtual void getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* end) const {};
+
   virtual const uint32_t getPreferredNumaNode() const { return 0; }
   virtual void ReleaseGlobalSignal(void* signal) const {}
+  virtual const bool isFineGrainSupported() const {
+    return (info().svmCapabilities_ & CL_DEVICE_SVM_ATOMICS) != 0 ? true : false;
+  }
 
   //! Returns TRUE if the device is available for computations
   bool isOnline() const { return online_; }
@@ -1882,7 +1921,7 @@ class Device : public RuntimeObject {
 
   void SetActiveWait(bool state) { activeWait_ = state; }
 
-  virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset) {
+  virtual amd::Memory* GetArenaMemObj(const void* ptr, size_t& offset, size_t size = 0) {
     return nullptr;
   }
 #if defined(__clang__)

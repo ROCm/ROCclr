@@ -465,6 +465,9 @@ void Resource::memTypeToHeap(Pal::GpuMemoryCreateInfo* createInfo) {
       createInfo->heaps[2] = Pal::GpuHeapGartUswc;
       createInfo->flags.peerWritable = dev().P2PAccessAllowed();
       break;
+    case VaRange:
+      createInfo->heapCount = 0;
+      break;
     default:
       createInfo->heaps[0] = Pal::GpuHeapLocal;
       break;
@@ -1220,18 +1223,20 @@ bool Resource::create(MemoryType memType, CreateParams* params, bool forceLinear
     return CreateImage(params, forceLinear);
   }
 
-  Pal::gpusize svmPtr = 0;
-  if ((nullptr != params) && (nullptr != params->owner_) &&
-      (nullptr != params->owner_->getSvmPtr())) {
-    svmPtr = reinterpret_cast<Pal::gpusize>(params->owner_->getSvmPtr());
-    desc_.SVMRes_ = true;
-    svmPtr = (svmPtr == 1) ? 0 : svmPtr;
-    if (params->owner_->getMemFlags() & CL_MEM_SVM_ATOMICS) {
-      desc_.gl2CacheDisabled_ = true;
+  if (memoryType() != Resource::VaRange) {
+    Pal::gpusize svmPtr = 0;
+    if ((nullptr != params) && (nullptr != params->owner_) &&
+        (nullptr != params->owner_->getSvmPtr())) {
+      svmPtr = reinterpret_cast<Pal::gpusize>(params->owner_->getSvmPtr());
+      desc_.SVMRes_ = true;
+      svmPtr = (svmPtr == 1) ? 0 : svmPtr;
+      if (params->owner_->getMemFlags() & CL_MEM_SVM_ATOMICS) {
+        desc_.gl2CacheDisabled_ = true;
+      }
     }
-  }
-  if (desc_.SVMRes_) {
-    return CreateSvm(params, svmPtr);
+    if (desc_.SVMRes_) {
+      return CreateSvm(params, svmPtr);
+    }
   }
 
   Pal::GpuMemoryCreateInfo createInfo = {};
@@ -1248,6 +1253,8 @@ bool Resource::create(MemoryType memType, CreateParams* params, bool forceLinear
     createInfo.flags.sdiExternal = true;
   } else if (memoryType() == BusAddressable) {
     createInfo.flags.busAddressable = true;
+  } else if (memoryType() == VaRange) {
+    createInfo.flags.virtualAlloc = true;
   }
 
   memTypeToHeap(&createInfo);
@@ -1267,6 +1274,9 @@ bool Resource::create(MemoryType memType, CreateParams* params, bool forceLinear
     address_ = memRef_->cpuAddress_;
     memRef_->cpuAddress_ = nullptr;
     mapCount_++;
+  }
+  if (memoryType() == VaRange) {
+    params->owner_->setSvmPtr(reinterpret_cast<void*>(memRef_->iMem()->Desc().gpuVirtAddr));
   }
   return true;
 }

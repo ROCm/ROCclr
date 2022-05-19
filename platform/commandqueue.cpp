@@ -40,7 +40,8 @@ HostQueue::HostQueue(Context& context, Device& device, cl_command_queue_properti
       lastEnqueueCommand_(nullptr),
       head_(nullptr),
       tail_(nullptr),
-      isActive_(false) {
+      isActive_(false),
+      markerTsCount_(0) {
   if (AMD_DIRECT_DISPATCH) {
     // Initialize the queue
     thread_.Init(this);
@@ -106,20 +107,24 @@ bool HostQueue::terminate() {
 
 void HostQueue::finish() {
   Command* command = nullptr;
+  bool isCacheFlushed = device().IsCacheFlushed(Device::CacheState::kCacheStateSystem);
   if (IS_HIP) {
     command = getLastQueuedCommand(true);
-    // Check if the queue has nothing to process and return
-    if (AMD_DIRECT_DISPATCH &&  command == nullptr) {
+    if (AMD_DIRECT_DISPATCH && isCacheFlushed && command == nullptr) {
       return;
     }
   }
-  if (nullptr == command) {
+
+  if (nullptr == command || !isCacheFlushed) {
+    if (nullptr != command) {
+      command->release();
+    }
     // Send a finish to make sure we finished all commands
     command = new Marker(*this, false);
     if (command == NULL) {
       return;
     }
-    ClPrint(LOG_DEBUG, LOG_CMD, "marker is queued");
+    ClPrint(LOG_DEBUG, LOG_CMD, "Marker queued, Cache Flushed = %d", isCacheFlushed);
     command->enqueue();
   }
   // Check HW status of the ROCcrl event. Note: not all ROCclr modes support HW status
@@ -194,7 +199,7 @@ void HostQueue::loop(device::VirtualDevice* virtualDevice) {
       continue;
     }
 
-    ClPrint(LOG_DEBUG, LOG_CMD, "command (%s) is submitted: %p", getOclCommandKindString(command->type()), command);
+    ClPrint(LOG_DEBUG, LOG_CMD, "Command (%s) submitted: %p", getOclCommandKindString(command->type()), command);
 
     command->setStatus(CL_SUBMITTED);
 
