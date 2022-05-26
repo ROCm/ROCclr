@@ -140,7 +140,8 @@ bool RgpCaptureMgr::Update(Pal::IPlatform* platform) {
     trace_.gpa_session_ = new GpuUtil::GpaSession(platform, device_.iDev(),
                                                   api_version >> 4,   // OCL API version major
                                                   api_version & 0xf,  // OCL API version minor
-                                                  GpuUtil::ApiType::OpenCl,
+                                                  (amd::IS_HIP) ? GpuUtil::ApiType::Hip :
+                                                                  GpuUtil::ApiType::OpenCl,
                                                   RgpSqttInstrumentationSpecVersion,
                                                   RgpSqttInstrumentationApiVersion);
 
@@ -605,6 +606,13 @@ Pal::Result RgpCaptureMgr::BeginRGPTrace(VirtualGPU* gpu) {
     result = trace_.gpa_session_->BeginSample(
       gpu->queue(MainEngine).iCmd(), sampleConfig, &trace_.gpa_sample_id_);
     gpu->eventEnd(MainEngine, trace_.begin_sqtt_event_);
+  }
+
+  if (result == Pal::Result::Success) {
+    GpuUtil::SampleTraceApiInfo sample_trace_api_info = {};
+    sample_trace_api_info.instructionTraceMode = (inst_tracing_enabled_) ?
+        GpuUtil::InstructionTraceMode::FullFrame : GpuUtil::InstructionTraceMode::Disabled;
+    trace_.gpa_session_->SetSampleTraceApiInfo(sample_trace_api_info, trace_.gpa_sample_id_);
   }
 
   // Submit the trace-begin command buffer
