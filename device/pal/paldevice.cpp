@@ -1086,7 +1086,6 @@ void PAL_STDCALL Device::PalDeveloperCallback(void* pPrivateData, const Pal::uin
 #endif  // PAL_GPUOPEN_OCL
 }
 
-// ================================================================================================
 bool Device::initializeHeapResources() {
   amd::ScopedLock k(lockForInitHeap_);
   if (!heapInitComplete_) {
@@ -1154,18 +1153,13 @@ bool Device::initializeHeapResources() {
     xferQueue_->enableSyncedBlit();
     if (amd::IS_HIP) {
       // Allocate initial heap for device memory allocator
-      static constexpr size_t HeapBufferSize = 128 * Ki;
+      static constexpr size_t HeapBufferSize = 1024 * Ki;
       heap_buffer_ = createMemory(HeapBufferSize);
-      if (heap_buffer_ == nullptr) {
-        LogError("Heap buffer allocation failed!");
-        return false;
-      }
     }
   }
   return true;
 }
 
-// ================================================================================================
 device::VirtualDevice* Device::createVirtualDevice(amd::CommandQueue* queue) {
   bool profiling = false;
   uint rtCUs = amd::CommandQueue::RealTimeDisabled;
