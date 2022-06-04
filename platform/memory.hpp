@@ -376,6 +376,8 @@ class Memory : public amd::RuntimeObject {
   //!save the user data during memory allocation
   UserData& getUserData() { return userData_; }
 
+  //!find if memory object is Arena memory
+  virtual bool isArena() { return false; }
 };
 
 //! Buffers are a specialization of memory. Just a wrapper, really,
@@ -672,6 +674,7 @@ public:
   ArenaMemory(Context& context)
     : Buffer(context, 0, std::numeric_limits<size_t>::max(),
              reinterpret_cast<void*>(kArenaMemoryPtr)) {}
+  bool isArena() { return true; }
 };
 
 }  // namespace amd
