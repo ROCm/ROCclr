@@ -787,20 +787,6 @@ bool Device::create() {
     return false;
   }
 
-  if (amd::IS_HIP) {
-    // Allocate initial heap for device memory allocator
-    static constexpr size_t HeapBufferSize = 128 * Ki;
-    heap_buffer_ = createMemory(HeapBufferSize);
-    // Clear memory to 0 for device library logic
-    if ((heap_buffer_ == nullptr) ||
-        (HSA_STATUS_SUCCESS != hsa_amd_memory_fill(
-            reinterpret_cast<void*>(HeapBuffer()->virtualAddress()), 0,
-            HeapBufferSize / sizeof(uint32_t)))) {
-      LogError("Heap buffer allocation failed!");
-      return false;
-    }
-  }
-
   return true;
 }
 
@@ -2673,7 +2659,7 @@ void Device::getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* 
 // ================================================================================================
 bool Device::IsCacheFlushed(Device::CacheState state) const {
 
-  return ROC_EVENT_NO_FLUSH ? 
+  return ROC_EVENT_NO_FLUSH ?
          (static_cast<int>(state) == cache_state_.load(std::memory_order_relaxed)) : true;
 }
 
@@ -3178,6 +3164,25 @@ bool Device::IsValidAllocation(const void* dev_ptr, size_t size) const {
     return true;
   }
   return false;
+}
+
+// ================================================================================================
+void Device::HiddenHeapAlloc() {
+  auto HeapAllocZeroOut = [this]()->bool {
+    // Allocate initial heap for device memory allocator
+    static constexpr size_t HeapBufferSize = 128 * Ki;
+    heap_buffer_ = createMemory(HeapBufferSize);
+    // Clear memory to 0 for device library logic
+    if ((heap_buffer_ == nullptr) ||
+        (HSA_STATUS_SUCCESS != hsa_amd_memory_fill(
+      reinterpret_cast<void*>(HeapBuffer()->virtualAddress()), 0,
+      HeapBufferSize / sizeof(uint32_t)))) {
+      LogError("Heap buffer allocation failed!");
+      return false;
+    }
+    return true;
+  };
+  std::call_once(heap_initialized_, HeapAllocZeroOut);
 }
 
 // ================================================================================================

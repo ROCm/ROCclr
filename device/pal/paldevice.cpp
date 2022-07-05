@@ -57,6 +57,14 @@
 #include <sstream>
 #include <tuple>
 
+#ifdef PAL_GPUOPEN_OCL
+// gpuutil headers
+#include "gpuUtil/palGpaSession.h"
+#include "devDriverServer.h"
+#include "protocols/rgpServer.h"
+#include "protocols/driverControlServer.h"
+#endif // PAL_GPUOPEN_OCL
+
 namespace {
 
 //! Define the mapping from PAL asic revision enumeration values to the
@@ -1153,15 +1161,6 @@ bool Device::initializeHeapResources() {
       return false;
     }
     xferQueue_->enableSyncedBlit();
-    if (amd::IS_HIP) {
-      // Allocate initial heap for device memory allocator
-      static constexpr size_t HeapBufferSize = 128 * Ki;
-      heap_buffer_ = createMemory(HeapBufferSize);
-      if (heap_buffer_ == nullptr) {
-        LogError("Heap buffer allocation failed!");
-        return false;
-      }
-    }
   }
   return true;
 }
@@ -1288,6 +1287,16 @@ bool Device::init() {
   if (Pal::Result::Success != Pal::CreatePlatform(info, platformObj_, &platform_)) {
     return false;
   }
+
+#ifdef PAL_GPUOPEN_OCL
+  if ((platform_->GetDevDriverServer() != nullptr) &&
+      (platform_->GetDevDriverServer()->GetDriverControlServer() != nullptr)) {
+    // Make sure the devdriver initialization is done after Pal platform creation
+    // to avoid a timeout in RGP server
+    platform_->GetDevDriverServer()->GetDriverControlServer()->StartLateDeviceInit();
+    platform_->GetDevDriverServer()->GetDriverControlServer()->FinishDeviceInit();
+  }
+#endif // PAL_GPUOPEN_OCL
 
   // Get the total number of active devices
   // Count up all the devices in the system.
@@ -2261,7 +2270,7 @@ void* Device::virtualAlloc(void* addr, size_t size, size_t alignment)
   }
   // if the device supports SVM FGS, return the committed CPU address directly.
   pal::Memory* gpuMem = getGpuMemory(mem);
-  amd::MemObjMap::AddMemObj(mem->getSvmPtr(), mem);
+  amd::MemObjMap::AddVirtualMemObj(mem->getSvmPtr(), mem);
 
   void* svmPtr = mem->getSvmPtr();
 
@@ -2270,10 +2279,10 @@ void* Device::virtualAlloc(void* addr, size_t size, size_t alignment)
 
 void Device::virtualFree(void* addr)
 {
-  amd::Memory* va = amd::MemObjMap::FindMemObj(addr);
+  amd::Memory* va = amd::MemObjMap::FindVirtualMemObj(addr);
   if (nullptr != va && (va->getMemFlags() & CL_MEM_VA_RANGE_AMD)) {
     va->release();
-    amd::MemObjMap::RemoveMemObj(addr);
+    amd::MemObjMap::RemoveVirtualMemObj(addr);
   }
 }
 
@@ -2304,6 +2313,22 @@ void Device::ReleaseExclusiveGpuAccess(VirtualGPU& vgpu) const {
   vgpusAccess().unlock();
 }
 
+// ================================================================================================
+void Device::HiddenHeapAlloc() {
+  auto HeapAlloc = [this]()->bool {
+    // Allocate initial heap for device memory allocator
+    static constexpr size_t HeapBufferSize = 128 * Ki;
+    heap_buffer_ = createMemory(HeapBufferSize);
+    if (heap_buffer_ == nullptr) {
+      LogError("Heap buffer allocation failed!");
+      return false;
+    }
+    return true;
+  };
+  std::call_once(heap_initialized_, HeapAlloc);
+}
+
+// ================================================================================================
 Device::SrdManager::~SrdManager() {
   for (uint i = 0; i < pool_.size(); ++i) {
     pool_[i].buf_->unmap(nullptr);
