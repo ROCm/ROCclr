@@ -774,8 +774,6 @@ bool DmaBlitManager::hsaCopyStaged(const_address hostSrc, address hostDst, size_
 KernelBlitManager::KernelBlitManager(VirtualGPU& gpu, Setup setup)
     : DmaBlitManager(gpu, setup),
       program_(nullptr),
-      constantBuffer_(nullptr),
-      constantBufferOffset_(0),
       xferBufferSize_(0),
       lockXferOps_("Transfer Ops Lock", true) {
   for (uint i = 0; i < BlitTotal; ++i) {
@@ -798,10 +796,6 @@ KernelBlitManager::~KernelBlitManager() {
   if (nullptr != context_) {
     // Release a dummy context
     context_->release();
-  }
-
-  if (nullptr != constantBuffer_) {
-    constantBuffer_->release();
   }
 }
 
@@ -853,18 +847,6 @@ bool KernelBlitManager::createProgram(Device& device) {
 
     result = true;
   } while (!result);
-
-  // Create an internal constant buffer
-  constantBuffer_ = new (*context_) amd::Buffer(*context_, CL_MEM_ALLOC_HOST_PTR, 4 * Ki);
-  // Assign the constant buffer to the current virtual GPU
-  constantBuffer_->setVirtualDevice(&gpu());
-  if ((constantBuffer_ != nullptr) && !constantBuffer_->create(nullptr)) {
-    constantBuffer_->release();
-    constantBuffer_ = nullptr;
-    return false;
-  } else if (constantBuffer_ == nullptr) {
-    return false;
-  }
 
   return result;
 }
@@ -2030,14 +2012,7 @@ bool KernelBlitManager::fillBuffer1D(device::Memory& memory, const void* pattern
         setArgument(kernels_[fillType], 3, sizeof(cl_mem), nullptr);
       }
 
-      Memory* gpuCB = dev().getRocMemory(constantBuffer_);
-      if (gpuCB == nullptr) {
-        return false;
-      }
-
-      // Find offset in the current constant buffer to allow multipel fills
-      uint32_t  constBufOffset = ConstantBufferOffset();
-      auto constBuf = reinterpret_cast<address>(constantBuffer_->getHostMem()) + constBufOffset;
+      auto constBuf = gpu().allocKernArg(kCBSize, kCBAlignment);
 
       // If pattern has been expanded, use the expanded pattern, otherwise use the default pattern.
       if (packed_obj.pattern_expanded_) {
@@ -2045,9 +2020,8 @@ bool KernelBlitManager::fillBuffer1D(device::Memory& memory, const void* pattern
       } else {
         memcpy(constBuf, pattern, kpattern_size32);
       }
-
-      mem = as_cl<amd::Memory>(gpuCB->owner());
-      setArgument(kernels_[fillType], 4, sizeof(cl_mem), &mem, constBufOffset);
+      constexpr bool kDirectVa = true;
+      setArgument(kernels_[fillType], 4, sizeof(cl_mem), constBuf, 0, nullptr, kDirectVa);
 
       koffset /= alignment;
       kpattern_size32 /= alignment;
@@ -2127,18 +2101,12 @@ bool KernelBlitManager::fillBuffer2D(device::Memory& memory, const void* pattern
       setArgument(kernels_[fillType], 3, sizeof(cl_mem), nullptr);
     }
 
-    Memory* gpuCB = dev().getRocMemory(constantBuffer_);
-    if (gpuCB == nullptr) {
-      return false;
-    }
-
-    // Find offset in the current constant buffer to allow multipel fills
-    uint32_t  constBufOffset = ConstantBufferOffset();
-    auto constBuf = reinterpret_cast<address>(constantBuffer_->getHostMem()) + constBufOffset;
+    // Get constant buffer to allow multipel fills
+    auto constBuf = gpu().allocKernArg(kCBSize, kCBAlignment);
     memcpy(constBuf, pattern, patternSize);
 
-    mem = as_cl<amd::Memory>(gpuCB->owner());
-    setArgument(kernels_[fillType], 4, sizeof(cl_mem), &mem, constBufOffset);
+    constexpr bool kDirectVa = true;
+    setArgument(kernels_[fillType], 4, sizeof(cl_mem), constBuf, 0, nullptr, kDirectVa);
 
     uint64_t mem_origin = static_cast<uint64_t>(origin[0]);
     uint64_t width = static_cast<uint64_t>(size[0]);
@@ -2186,6 +2154,7 @@ bool KernelBlitManager::copyBuffer(device::Memory& srcMemory, device::Memory& ds
   bool p2p = (&gpuMem(srcMemory).dev() != &gpuMem(dstMemory).dev()) &&
              ((sizeIn[0] > ROC_P2P_SDMA_SIZE * Ki) || !gpu().IsPendingDispatch());
   bool asan = false;
+  bool ipcShared = srcMemory.owner()->ipcShared() || dstMemory.owner()->ipcShared();
 #if defined(__clang__)
 #if __has_feature(address_sanitizer)
   asan = true;
@@ -2193,7 +2162,7 @@ bool KernelBlitManager::copyBuffer(device::Memory& srcMemory, device::Memory& ds
 #endif
   if (setup_.disableHwlCopyBuffer_ ||
       (!srcMemory.isHostMemDirectAccess() && !dstMemory.isHostMemDirectAccess() &&
-       !(p2p || asan))) {
+       !(p2p || asan) && !ipcShared)) {
     uint blitType = BlitCopyBuffer;
     size_t dim = 1;
     size_t globalWorkOffset[3] = {0, 0, 0};

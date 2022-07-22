@@ -106,7 +106,6 @@ std::vector<hsa_agent_t> roc::Device::gpu_agents_;
 std::vector<AgentInfo> roc::Device::cpu_agents_;
 
 address Device::mg_sync_ = nullptr;
-amd::Monitor Device::lockP2P_("Lock P2P ON/OFF");
 
 bool NullDevice::create(const amd::Isa &isa) {
   if (!isa.runtimeRocSupported()) {
@@ -1164,6 +1163,14 @@ bool Device::populateOCLDeviceConstants() {
       return false;
   }
 
+  uint64_t wallClockFrequency = 0; // in Hz
+  if (HSA_STATUS_SUCCESS !=
+      hsa_agent_get_info(bkendDevice_, (hsa_agent_info_t)HSA_AMD_AGENT_INFO_TIMESTAMP_FREQUENCY ,
+          &wallClockFrequency)) {
+    LogWarning("HSA_AMD_AGENT_INFO_TIMESTAMP_FREQUENCY cannot be queried. Ignored!");
+  }
+  info_.wallClockFrequency_ = static_cast<uint32_t>(wallClockFrequency / 1000); // in KHz
+
   if (HSA_STATUS_SUCCESS !=
       hsa_agent_get_info(bkendDevice_,
                          static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_MEMORY_WIDTH),
@@ -2012,31 +2019,6 @@ void* Device::hostNumaAlloc(size_t size, size_t alignment, bool atomics) const {
 
 void Device::hostFree(void* ptr, size_t size) const { memFree(ptr, size); }
 
-bool Device::enableP2P(amd::Device* ptrDev) {
-  assert(ptrDev != nullptr);
-  amd::ScopedLock lock(lockP2P_);
-  Device* peerDev = static_cast<Device*>(ptrDev);
-  if (std::find(enabled_p2p_devices_.begin(), enabled_p2p_devices_.end(), peerDev) ==
-      enabled_p2p_devices_.end()) {
-    enabled_p2p_devices_.push_back(peerDev);
-    // Update access to all old allocations
-    amd::MemObjMap::UpdateAccess(static_cast<amd::Device*>(this));
-  }
-  return true;
-}
-
-bool Device::disableP2P(amd::Device* ptrDev) {
-  assert(ptrDev != nullptr);
-  amd::ScopedLock lock(lockP2P_);
-  Device* peerDev = static_cast<Device*>(ptrDev);
-  //if device is present then remove
-  auto it = std::find(enabled_p2p_devices_.begin(), enabled_p2p_devices_.end(), peerDev);
-  if (it != enabled_p2p_devices_.end()) {
-    enabled_p2p_devices_.erase(it);
-  }
-  return true;
-}
-
 bool Device::deviceAllowAccess(void* ptr) const {
   std::lock_guard<std::mutex> lock(lock_allow_access_);
   if (!p2pAgents().empty()) {
@@ -2184,7 +2166,7 @@ bool Device::IpcAttach(const void* handle, size_t mem_size, size_t mem_offset,
       amd_mem_obj->release();
       return false;
     }
-
+    amd_mem_obj->setIpcShared(true);
     // Add the original mem_ptr to the MemObjMap with newly created amd_mem_obj
     amd::MemObjMap::AddMemObj(orig_dev_ptr, amd_mem_obj);
 

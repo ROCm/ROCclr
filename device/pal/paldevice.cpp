@@ -351,6 +351,7 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
   info_.maxMemoryClockFrequency_ = (palProp.gpuMemoryProperties.performance.maxMemClock != 0)
       ? palProp.gpuMemoryProperties.performance.maxMemClock
       : 555;
+  info_.wallClockFrequency_ = palProp.timestampFrequency / 1000; // in KHz
   info_.vramBusBitWidth_ = palProp.gpuMemoryProperties.performance.vramBusBitWidth;
   info_.l2CacheSize_ = palProp.gfxipProperties.shaderCore.tccSizeInBytes;
   info_.maxParameterSize_ = 1024;
@@ -2188,6 +2189,12 @@ void* Device::hostAlloc(size_t size, size_t alignment, MemorySegment mem_seg) co
 void Device::hostFree(void* ptr, size_t size) const {
   // If we allocate the host memory, we need free, or we have to release
   amd::Os::releaseMemory(ptr, size);
+}
+
+bool Device::deviceAllowAccess(void* ptr) const {
+  std::lock_guard<std::mutex> lock(lockAllowAccess_);
+  // Empty function for now.
+  return true;
 }
 
 void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_svm_mem_flags flags,
