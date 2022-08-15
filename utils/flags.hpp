@@ -280,7 +280,6 @@ release(bool, GPU_STREAMOPS_CP_WAIT, false,                                   \
 namespace amd {
 
 extern bool IS_HIP;
-extern std::atomic_bool IS_PROFILER_ON;
 
 extern bool IS_LEGACY;
 
