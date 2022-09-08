@@ -24,11 +24,11 @@
 #include "rocdefs.hpp"
 #include "rocdevice.hpp"
 #include "utils/util.hpp"
-#include "hsa.h"
-#include "hsa_ext_image.h"
-#include "hsa_ext_amd.h"
+#include "hsa/hsa.h"
+#include "hsa/hsa_ext_image.h"
+#include "hsa/hsa_ext_amd.h"
 #include "rocprintf.hpp"
-#include "hsa_ven_amd_aqlprofile.h"
+#include "hsa/hsa_ven_amd_aqlprofile.h"
 #include "rocsched.hpp"
 
 namespace roc {
@@ -105,6 +105,7 @@ class Timestamp : public amd::ReferenceCountedObject {
   std::vector<ProfilingSignal*> signals_; //!< The list of all signals, associated with the TS
   hsa_signal_t callback_signal_;  //!< Signal associated with a callback for possible later update
   amd::Monitor  lock_;            //!< Serialize timestamp update
+  bool        accum_ena_ = false; //!< If TRUE then the accumulation of execution times has started
 
   Timestamp(const Timestamp&) = delete;
   Timestamp& operator=(const Timestamp&) = delete;

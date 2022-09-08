@@ -188,6 +188,7 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
     {"gfx1034",                "gfx1034",   true,  true,    10, 3,  4,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1035",                "gfx1035",   true,  true,    10, 3,  5,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1100",                "gfx1100",   true,  true,    11, 0,  0,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1101",                "gfx1101",   true,  true,    11, 0,  1,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1102",                "gfx1102",   true,  true,    11, 0,  2,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
   };
   return std::make_pair(std::begin(supportedIsas_), std::end(supportedIsas_));
@@ -530,7 +531,8 @@ bool Device::ValidateComgr() {
 #if defined(USE_COMGR_LIBRARY)
   // Check if Lightning compiler was requested
   if (settings_->useLightning_) {
-    std::call_once(amd::Comgr::initialized, amd::Comgr::LoadLib);
+    constexpr bool kComgrVersioned = false;
+    std::call_once(amd::Comgr::initialized, amd::Comgr::LoadLib, kComgrVersioned);
     // Use Lightning only if it's available
     settings_->useLightning_ = amd::Comgr::IsReady();
     return settings_->useLightning_;
@@ -737,8 +739,7 @@ bool Device::disableP2P(amd::Device* ptrDev) {
 }
 
 bool Device::UpdateStackSize(uint64_t stackSize) {
-  uint32_t maxMemPerThread = info().localMemSizePerCU_ / info().maxThreadsPerCU_;
-  if (maxMemPerThread < stackSize) {
+  if (stackSize > 16 * Ki) {
     return false;
   }
   stack_size_ = stackSize;

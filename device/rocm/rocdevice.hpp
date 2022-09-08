@@ -40,10 +40,10 @@
 #include "device/rocm/rocprintf.hpp"
 #include "device/rocm/rocglinterop.hpp"
 
-#include "hsa.h"
-#include "hsa_ext_image.h"
-#include "hsa_ext_amd.h"
-#include "hsa_ven_amd_loader.h"
+#include "hsa/hsa.h"
+#include "hsa/hsa_ext_image.h"
+#include "hsa/hsa_ext_amd.h"
+#include "hsa/hsa_ven_amd_loader.h"
 
 #include <atomic>
 #include <iostream>
@@ -421,6 +421,8 @@ class Device : public NullDevice {
   virtual void hostFree(void* ptr, size_t size = 0) const;
 
   bool deviceAllowAccess(void* dst) const;
+
+  bool allowPeerAccess(device::Memory* memory) const;
 
   void* deviceLocalAlloc(size_t size, bool atomics = false) const;
 

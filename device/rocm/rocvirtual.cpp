@@ -33,8 +33,8 @@
 #include "platform/sampler.hpp"
 #include "utils/debug.hpp"
 #include "os/os.hpp"
-#include "amd_hsa_kernel_code.h"
-#include "amd_hsa_queue.h"
+#include "hsa/amd_hsa_kernel_code.h"
+#include "hsa/amd_hsa_queue.h"
 
 #include <fstream>
 #include <limits>
@@ -151,7 +151,12 @@ void Timestamp::checkGpuTime() {
     }
     signals_.clear();
     if (end != 0) {
-      start_ = start * ticksToTime_;
+      // Check if it's the first execution and update start time
+      if (!accum_ena_) {
+        start_ = start * ticksToTime_;
+        accum_ena_ = true;
+      }
+      // Progress the end time always
       end_ = end * ticksToTime_;
     }
   }
@@ -2972,10 +2977,10 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
     dispatchPacket.private_segment_size = devKernel->workGroupInfo()->privateMemSize_;
 
     if ((devKernel->workGroupInfo()->usedStackSize_ & 0x1) == 0x1) {
-      dispatchPacket.private_segment_size += dev().StackSize();
-      uint32_t maxMemPerThread = device().info().localMemSizePerCU_ / device().info().maxThreadsPerCU_;
-      if (dispatchPacket.private_segment_size > maxMemPerThread) {
-        dispatchPacket.private_segment_size = maxMemPerThread;
+      dispatchPacket.private_segment_size =
+              std::max<uint64_t>(dev().StackSize(), dispatchPacket.private_segment_size);
+      if (dispatchPacket.private_segment_size > 16 * Ki) {
+        dispatchPacket.private_segment_size = 16 * Ki;
       }
     }
 

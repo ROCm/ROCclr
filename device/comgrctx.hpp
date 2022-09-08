@@ -23,7 +23,7 @@
 #include <mutex>
 #if defined(USE_COMGR_LIBRARY)
 #include "top.hpp"
-#include "amd_comgr.h"
+#include "amd_comgr/amd_comgr.h"
 
 namespace amd {
 typedef void (*t_amd_comgr_get_version)(size_t *major, size_t *minor);
@@ -140,7 +140,7 @@ class Comgr : public amd::AllStatic {
 public:
   static std::once_flag initialized;
 
-  static bool LoadLib();
+  static bool LoadLib(bool is_versioned = false);
 
   static bool IsReady() { return is_ready_; }
 

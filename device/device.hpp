@@ -1715,6 +1715,11 @@ class Device : public RuntimeObject {
     return true;
   }
 
+  virtual bool allowPeerAccess(device::Memory* memory) const {
+    ShouldNotCallThis();
+    return true;
+  }
+
   bool enableP2P(amd::Device* ptrDev);
 
   bool disableP2P(amd::Device* ptrDev);
@@ -1972,8 +1977,8 @@ class Device : public RuntimeObject {
   std::once_flag heap_initialized_; //!< Heap buffer initialization flag
   device::Memory* heap_buffer_;     //!< Preallocated heap buffer for memory allocations on device
 
-  amd::Memory* arena_mem_obj_;    //!< Arena memory object
-  uint64_t stack_size_{0};        //!< Device stack size
+  amd::Memory* arena_mem_obj_;      //!< Arena memory object
+  uint64_t stack_size_{1024};       //!< Device stack size
 
  private:
   const Isa *isa_;                //!< Device isa
