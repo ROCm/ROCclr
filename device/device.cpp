@@ -187,9 +187,11 @@ std::pair<const Isa*, const Isa*> Isa::supportedIsas() {
     {"gfx1033",                "gfx1033",   true,  false,   10, 3,  3,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1034",                "gfx1034",   true,  true,    10, 3,  4,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1035",                "gfx1035",   true,  true,    10, 3,  5,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1036",                "gfx1036",   true,  true,    10, 3,  6,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1100",                "gfx1100",   true,  true,    11, 0,  0,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1101",                "gfx1101",   true,  true,    11, 0,  1,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
     {"gfx1102",                "gfx1102",   true,  true,    11, 0,  2,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
+    {"gfx1103",                "gfx1103",   true,  true,    11, 0,  3,    NONE,   NONE, 2,    32,   1,    256,    64 * Ki, 32},
   };
   return std::make_pair(std::begin(supportedIsas_), std::end(supportedIsas_));
 }
@@ -563,6 +565,10 @@ bool Device::create(const Isa &isa) {
   vaCacheMap_ = new std::map<uintptr_t, device::Memory*>();
   if (nullptr == vaCacheMap_) {
     return false;
+  }
+  // For OpenCl default stack size needs to be set to 16K
+  if (!amd::IS_HIP) {
+    stack_size_ = 16 * Ki;
   }
   return true;
 }

@@ -43,10 +43,13 @@ set(PAL_BUILD_GFX           ON)
 set(PAL_BUILD_NULL_DEVICE   OFF)
 set(PAL_BUILD_GFX6          ON)
 set(PAL_BUILD_GFX9          ON)
+set(PAL_BUILD_GFX11         ON)
+set(PAL_BUILD_NAVI31        ON)
+set(PAL_BUILD_NAVI32        ON)
+set(PAL_BUILD_NAVI33        ON)
 
 find_package(AMD_PAL)
 find_package(AMD_HSA_LOADER)
-find_package(AMD_UGL)
 
 target_sources(rocclr PRIVATE
   ${ROCCLR_SRC_DIR}/device/pal/palappprofile.cpp
@@ -73,7 +76,6 @@ target_sources(rocclr PRIVATE
   ${ROCCLR_SRC_DIR}/device/pal/palvirtual.cpp)
 
 target_compile_definitions(rocclr PUBLIC WITH_PAL_DEVICE PAL_GPUOPEN_OCL)
-target_include_directories(rocclr PUBLIC ${AMD_UGL_INCLUDE_DIRS})
 target_link_libraries(rocclr PUBLIC pal amdhsaloader)
 
 # support for OGL/D3D interop
