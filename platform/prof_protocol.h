@@ -27,9 +27,10 @@
 typedef enum {
   ACTIVITY_DOMAIN_HSA_API = 0,                    // HSA API domain
   ACTIVITY_DOMAIN_HSA_OPS = 1,                    // HSA async activity domain
-  ACTIVITY_DOMAIN_HCC_OPS = 2,                    // HCC async activity domain
+  ACTIVITY_DOMAIN_HIP_OPS = 2,                    // HIP async activity domain
+  ACTIVITY_DOMAIN_HCC_OPS = ACTIVITY_DOMAIN_HIP_OPS, // HCC async activity domain
+  ACTIVITY_DOMAIN_HIP_VDI = ACTIVITY_DOMAIN_HIP_OPS, // HIP VDI domain
   ACTIVITY_DOMAIN_HIP_API = 3,                    // HIP API domain
-  ACTIVITY_DOMAIN_HIP_VDI = ACTIVITY_DOMAIN_HCC_OPS, // HIP VDI domain
   ACTIVITY_DOMAIN_KFD_API = 4,                    // KFD API domain
   ACTIVITY_DOMAIN_EXT_API = 5,                    // External ID domain
   ACTIVITY_DOMAIN_ROCTX   = 6,                    // ROCTX domain
@@ -42,7 +43,7 @@ typedef enum {
   ACTIVITY_EXT_OP_EXTERN_ID = 1
 } activity_ext_op_t;
 
-// API calback type
+// API callback type
 typedef void (*activity_rtapi_callback_t)(uint32_t domain, uint32_t cid, const void* data, void* arg);
 typedef uint32_t activity_kind_t;
 typedef uint32_t activity_op_t;
@@ -78,13 +79,15 @@ struct activity_record_t {
         activity_correlation_id_t external_id;     // external correlatino id
       };
     };
+  union {
     size_t bytes;                                  // data size bytes
+    const char* kernel_name;
+  };
 };
 
 // Activity sync calback type
-typedef void* (*activity_sync_callback_t)(uint32_t cid, activity_record_t* record, const void* data, void* arg);
+typedef void (*activity_sync_callback_t)(uint32_t cid, activity_record_t* record, const void* data, void* arg);
 // Activity async calback type
-typedef void (*activity_id_callback_t)(activity_correlation_id_t id);
-typedef void (*activity_async_callback_t)(uint32_t op, void* record, void* arg);
+typedef void (*activity_async_callback_t)(uint32_t op, activity_record_t* record, void* arg);
 
 #endif  // INC_EXT_PROF_PROTOCOL_H_

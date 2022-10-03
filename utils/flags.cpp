@@ -82,7 +82,6 @@ namespace amd {
 #endif  // __APPLE__
 
 bool IS_HIP = false;
-std::atomic_bool IS_PROFILER_ON(false);
 
 #if !defined(_WIN32) && defined(WITH_PAL_DEVICE)
 bool IS_LEGACY = true;
@@ -149,6 +148,7 @@ bool Flag::init() {
   if (!flagIsDefault(AMD_LOG_LEVEL)) {
     if (!flagIsDefault(AMD_LOG_LEVEL_FILE)) {
       std::string fileName = AMD_LOG_LEVEL_FILE;
+      fileName = fileName + "_" + std::to_string(getpid());
       outFile = fopen(fileName.c_str(), "w");
     }
   }

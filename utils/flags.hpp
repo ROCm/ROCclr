@@ -180,7 +180,7 @@ release(bool, OCL_CODE_CACHE_ENABLE, false,                                   \
         "1 = Enable compiler code cache")                                     \
 release(bool, OCL_CODE_CACHE_RESET, false,                                    \
         "1 =  Reset the compiler code cache storage")                         \
-release_on_stg(bool, PAL_DISABLE_SDMA, false,                                 \
+release(bool, PAL_DISABLE_SDMA, false,                                        \
         "1 = Disable SDMA for PAL")                                           \
 release(uint, PAL_RGP_DISP_COUNT, 10000,                                      \
         "The number of dispatches for RGP capture with SQTT")                 \
@@ -235,7 +235,7 @@ release(uint, HIP_HIDDEN_FREE_MEM, 0,                                         \
         "0 = Disable")                                                        \
 release(size_t, GPU_FORCE_BLIT_COPY_SIZE, 0,                                  \
         "Size in KB of the threshold below which to force blit instead for sdma") \
-release(uint, ROC_ACTIVE_WAIT_TIMEOUT, 10,                                    \
+release(uint, ROC_ACTIVE_WAIT_TIMEOUT, 0,                                     \
         "Forces active wait of GPU interrup for the timeout(us)")             \
 release(bool, ROC_ENABLE_LARGE_BAR, true,                                     \
         "Enable Large Bar if supported by the device")                        \
@@ -268,7 +268,7 @@ release(bool, ROC_USE_FGS_KERNARG, true,                                      \
         "Use fine grain kernel args segment for supported asics")             \
 release(uint, ROC_P2P_SDMA_SIZE, 1024,                                        \
         "The minimum size in KB for P2P transfer with SDMA")                  \
-release(uint, ROC_AQL_QUEUE_SIZE, 4096,                                       \
+release(uint, ROC_AQL_QUEUE_SIZE, 16384,                                      \
         "AQL queue size in AQL packets")                                      \
 release(uint, ROC_SIGNAL_POOL_SIZE, 32,                                       \
         "Initial size of HSA signal pool")                                    \
@@ -282,7 +282,6 @@ release(bool, ROC_EVENT_NO_FLUSH, false,                                      \
 namespace amd {
 
 extern bool IS_HIP;
-extern std::atomic_bool IS_PROFILER_ON;
 
 extern bool IS_LEGACY;
 
