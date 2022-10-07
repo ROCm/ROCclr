@@ -2644,8 +2644,7 @@ static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
     // Abort on device exceptions.
     const char* errorMsg = 0;
     hsa_status_string(status, &errorMsg);
-    ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS,
-            "Device::callbackQueue aborting with error : %s code: 0x%x", errorMsg, status);
+    fprintf(stderr, "AQL queue %p aborting with error: %s code: 0x%x", queue, errorMsg, status);
     abort();
   }
 }

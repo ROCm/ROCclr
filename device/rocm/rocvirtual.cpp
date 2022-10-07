@@ -2510,8 +2510,9 @@ void VirtualGPU::submitMigrateMemObjects(amd::MigrateMemObjectsCommand& vcmd) {
 static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
   if (status != HSA_STATUS_SUCCESS && status != HSA_STATUS_INFO_BREAK) {
     // Abort on device exceptions.
-    ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS, "VirtualGPU::callbackQueue aborting with status: 0x%x",
-            status);
+    const char* errorMsg = 0;
+    hsa_status_string(status, &errorMsg);
+    fprintf(stderr, "AQL queue %p aborting with error: %s code: 0x%x", queue, errorMsg, status);
     abort();
   }
 }
