@@ -35,7 +35,7 @@
 #include "CL/cl_d3d11.h"
 #endif  // _WIN32
 #include <GL/gl.h>
-#include "GL/glATIInternal.h"
+#include "GL/gl_interop.h"
 
 #include <string>
 #include <fstream>
@@ -1255,6 +1255,10 @@ bool Resource::create(MemoryType memType, CreateParams* params, bool forceLinear
     createInfo.flags.busAddressable = true;
   } else if (memoryType() == VaRange) {
     createInfo.flags.virtualAlloc = true;
+    if (params->owner_->getSvmPtr() != nullptr) {
+      createInfo.flags.startVaHintFlag = true;
+      createInfo.startVaHint = reinterpret_cast<Pal::gpusize>(params->owner_->getSvmPtr());
+    }
   }
 
   memTypeToHeap(&createInfo);

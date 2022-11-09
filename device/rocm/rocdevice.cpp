@@ -974,23 +974,23 @@ hsa_status_t Device::iterateCpuMemoryPoolCallback(hsa_amd_memory_pool_t pool, vo
           // from "fine_grain and kern_args".
           agentInfo->fine_grain_pool = pool;
         }
-        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_COARSE_GRAINED) == 0)
-                  && ("Memory Segment cannot be both coarse and fine grained"));
+        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_COARSE_GRAINED) == 0),
+                  "Memory Segment cannot be both coarse and fine grained");
       } else {
         // If the flag is not set to fine grained, then it is coarse_grained by default.
         agentInfo->coarse_grain_pool = pool;
-        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_COARSE_GRAINED) != 0)
-                  && ("Memory Segments that are not fine grained has to be coarse grained"));
-        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_FINE_GRAINED) == 0)
-                  && ("Memory Segment cannot be both coarse and fine grained"));
-        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_KERNARG) == 0)
-                  && ("Coarse grained memory segment cannot have kern_args tag"));
+        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_COARSE_GRAINED) != 0),
+                  "Memory Segments that are not fine grained has to be coarse grained");
+        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_FINE_GRAINED) == 0),
+                  "Memory Segment cannot be both coarse and fine grained");
+        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_KERNARG) == 0),
+                  "Coarse grained memory segment cannot have kern_args tag");
       }
 
       if ((global_flag & HSA_REGION_GLOBAL_FLAG_KERNARG) != 0) {
         agentInfo->kern_arg_pool = pool;
-        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_COARSE_GRAINED) == 0)
-                  && ("Coarse grained memory segment cannot have kern_args tag"));
+        guarantee(((global_flag & HSA_REGION_GLOBAL_FLAG_COARSE_GRAINED) == 0),
+                  "Coarse grained memory segment cannot have kern_args tag");
       }
 
       break;
@@ -1178,6 +1178,13 @@ bool Device::populateOCLDeviceConstants() {
     return false;
   }
   assert(info_.globalMemChannels_ > 0);
+
+  if (HSA_STATUS_SUCCESS !=
+      hsa_agent_get_info(bkendDevice_,
+                         static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_DRIVER_NODE_ID),
+                         &info_.driverNodeId_)) {
+    return false;
+  }
 
   setupCpuAgent();
 
@@ -1570,11 +1577,8 @@ bool Device::populateOCLDeviceConstants() {
     info_.pcieDeviceId_ = pciDeviceId_;
     info_.cooperativeGroups_ = settings().enableCoopGroups_;
     info_.cooperativeMultiDeviceGroups_ = settings().enableCoopMultiDeviceGroups_;
-
-    // TODO: Update this to use HSA API when it is ready. For now limiting this to gfx9
-    info_.aqlBarrierValue_ = (isa().versionMajor() == 9 && isa().versionMinor() == 0 &&
-                             (isa().versionStepping() == 0 || isa().versionStepping() == 4 ||
-                              isa().versionStepping() == 8 || isa().versionStepping() == 10));
+    // Enable StreamWrite and StreamWait for all devices
+    info_.aqlBarrierValue_ = true;
   }
 
   info_.maxPipePacketSize_ = info_.maxMemAllocSize_;
@@ -1926,7 +1930,7 @@ void* Device::hostAlloc(size_t size, size_t alignment, MemorySegment mem_seg) co
       segment = system_segment_;
       break;
     default :
-      guarantee(false && "Invalid Memory Segment");
+      guarantee(false, "Invalid Memory Segment");
       break;
   }
 
@@ -2192,7 +2196,7 @@ bool Device::IpcAttach(const void* handle, size_t mem_size, size_t mem_offset,
   }
 
   //Make sure the mem_offset doesnt overflow the allocated memory
-  guarantee((mem_offset < mem_size) && "IPC mem offset greater than allocated size");
+  guarantee((mem_offset < mem_size), "IPC mem offset greater than allocated size");
 
   // Return orig_dev_ptr
   *dev_ptr = reinterpret_cast<address>(orig_dev_ptr);
@@ -2254,6 +2258,10 @@ void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_
     }
     // if the device supports SVM FGS, return the committed CPU address directly.
     Memory* gpuMem = getRocMemory(mem);
+    if (gpuMem == nullptr) {
+      LogError("failed to create GPU memory from svm hidden buffer!");
+      return nullptr;
+    }
 
     if (mem->getSvmPtr() != nullptr) {
       // add the information to context so that we can use it later.
