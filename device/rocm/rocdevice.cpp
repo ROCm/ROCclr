@@ -1669,10 +1669,23 @@ device::VirtualDevice* Device::createVirtualDevice(amd::CommandQueue* queue) {
 bool Device::globalFreeMemory(size_t* freeMemory) const {
   const uint TotalFreeMemory = 0;
   const uint LargestFreeBlock = 1;
+  uint64_t globalAvailMemory;
+  // Queries memory available in bytes across all global pools owned by the agent
+  if (HSA_STATUS_SUCCESS !=
+      hsa_agent_get_info(bkendDevice_,
+                         static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_MEMORY_AVAIL),
+                         &globalAvailMemory)) {
+    LogError("HSA_AMD_AGENT_INFO_MEMORY_AVAIL query failed.");
+  }
 
-  freeMemory[TotalFreeMemory] = freeMem_ / Ki;
-  freeMemory[TotalFreeMemory] -= (freeMemory[TotalFreeMemory] > HIP_HIDDEN_FREE_MEM * Ki) ?
-                                  HIP_HIDDEN_FREE_MEM * Ki : 0;
+  globalAvailMemory = globalAvailMemory / Ki;
+  if (globalAvailMemory > HIP_HIDDEN_FREE_MEM * Ki) {
+    globalAvailMemory -= HIP_HIDDEN_FREE_MEM * Ki;
+  } else {
+    globalAvailMemory = 0;
+  }
+
+  freeMemory[TotalFreeMemory] = globalAvailMemory;
   // since there is no memory heap on ROCm, the biggest free block is
   // equal to total free local memory
   freeMemory[LargestFreeBlock] = freeMemory[TotalFreeMemory];
@@ -2670,8 +2683,22 @@ static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
     // Abort on device exceptions.
     const char* errorMsg = 0;
     hsa_status_string(status, &errorMsg);
-    ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS,
-            "Device::callbackQueue aborting with error : %s code: 0x%x", errorMsg, status);
+    if (status == HSA_STATUS_ERROR_OUT_OF_RESOURCES) {
+      size_t global_available_mem = 0;
+      Device* dev = reinterpret_cast<Device*>(data);
+      if (HSA_STATUS_SUCCESS != hsa_agent_get_info(dev->getBackendDevice(),
+                         static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_MEMORY_AVAIL),
+                         &global_available_mem)) {
+        LogError("HSA_AMD_AGENT_INFO_MEMORY_AVAIL query failed.");
+      }
+      ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS,
+              "Callback: Queue %p Aborting with error : %s Code: 0x%x Available Free mem : %zu MB",
+              queue->base_address, errorMsg, status, global_available_mem/Mi);
+    } else {
+      ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS,
+        "Callback: Queue %p aborting with error : %s code: 0x%x", queue->base_address,
+        errorMsg, status);
+    }
     abort();
   }
 }

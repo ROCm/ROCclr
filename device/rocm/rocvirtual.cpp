@@ -146,7 +146,7 @@ void Timestamp::checkGpuTime() {
         start = std::min(time.start, start);
         end = std::max(time.end, end);
         ClPrint(amd::LOG_INFO, amd::LOG_SIG, "Signal = (0x%lx), start = %ld, "
-          "end = %ld", it->signal_.handle, start, end);
+          "end = %ld time taken= %ld ns", it->signal_.handle, start, end, end - start);
       }
       it->done_ = true;
     }
@@ -864,7 +864,7 @@ bool VirtualGPU::dispatchGenericAqlPacket(
             "0x%x (type=%d, barrier=%d, acquire=%d, release=%d), "
             "setup=%d, grid=[%zu, %zu, %zu], workgroup=[%zu, %zu, %zu], private_seg_size=%zu, "
             "group_seg_size=%zu, kernel_obj=0x%zx, kernarg_address=0x%zx, completion_signal=0x%zx",
-            gpu_queue_, header,
+            gpu_queue_->base_address, header,
             extractAqlBits(header, HSA_PACKET_HEADER_TYPE, HSA_PACKET_HEADER_WIDTH_TYPE),
             extractAqlBits(header, HSA_PACKET_HEADER_BARRIER,
                            HSA_PACKET_HEADER_WIDTH_BARRIER),
@@ -1006,7 +1006,7 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
           "HWq=0x%zx, BarrierAND Header = 0x%x (type=%d, barrier=%d, acquire=%d,"
           " release=%d), "
           "dep_signal=[0x%zx, 0x%zx, 0x%zx, 0x%zx, 0x%zx], completion_signal=0x%zx",
-          gpu_queue_, packetHeader,
+          gpu_queue_->base_address, packetHeader,
           extractAqlBits(packetHeader, HSA_PACKET_HEADER_TYPE,
                          HSA_PACKET_HEADER_WIDTH_TYPE),
           extractAqlBits(packetHeader, HSA_PACKET_HEADER_BARRIER,
@@ -2516,8 +2516,24 @@ void VirtualGPU::submitMigrateMemObjects(amd::MigrateMemObjectsCommand& vcmd) {
 static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
   if (status != HSA_STATUS_SUCCESS && status != HSA_STATUS_INFO_BREAK) {
     // Abort on device exceptions.
-    ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS, "VirtualGPU::callbackQueue aborting with status: 0x%x",
-            status);
+    const char* errorMsg = 0;
+    hsa_status_string(status, &errorMsg);
+    if (status == HSA_STATUS_ERROR_OUT_OF_RESOURCES) {
+      size_t global_available_mem = 0;
+      VirtualGPU* vgpu = reinterpret_cast<VirtualGPU*>(data);
+      if (HSA_STATUS_SUCCESS != hsa_agent_get_info(vgpu->gpu_device(),
+                         static_cast<hsa_agent_info_t>(HSA_AMD_AGENT_INFO_MEMORY_AVAIL),
+                         &global_available_mem)) {
+        LogError("HSA_AMD_AGENT_INFO_MEMORY_AVAIL query failed.");
+      }
+      ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS,
+              "Callback: Queue %p Aborting with error : %s Code: 0x%x Available Free mem : %zu MB",
+              queue->base_address, errorMsg, status, global_available_mem/Mi);
+    } else {
+      ClPrint(amd::LOG_NONE, amd::LOG_ALWAYS,
+        "Callback: Queue %p aborting with error : %s code: 0x%x", queue->base_address,
+        errorMsg, status);
+    }
     abort();
   }
 }
@@ -3021,6 +3037,12 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
       addSystemScope_ = false;
     }
 
+    // If profiling is enabled, store the correlation ID in the dispatch packet. The profiler can
+    // retrieve this correlation ID to attribute waves to specific dispatch locations.
+    if (vcmd != nullptr && vcmd->profilingInfo().enabled_) {
+      dispatchPacket.reserved2 = vcmd->profilingInfo().correlation_id_;
+    }
+
     // Dispatch the packet
     if (!dispatchAqlPacket(
             &dispatchPacket, aqlHeaderWithOrder,
@@ -3365,16 +3387,13 @@ void VirtualGPU::submitPerfCounter(amd::PerfCounterCommand& vcmd) {
     if (!profileRef->initialize()) {
       LogError("Failed to initialize performance counter");
       vcmd.setStatus(CL_INVALID_OPERATION);
-    }
-
-    // create the AQL packet for start profiling
-    if (profileRef->createStartPacket() == nullptr) {
+    } else if (profileRef->createStartPacket() == nullptr) {
       LogError("Failed to create AQL packet for start profiling");
       vcmd.setStatus(CL_INVALID_OPERATION);
+    } else {
+        dispatchCounterAqlPacket(profileRef->prePacket(), counter->gfxVersion(), false,
+                                 profileRef->api());
     }
-
-    dispatchCounterAqlPacket(profileRef->prePacket(), counter->gfxVersion(), false,
-                             profileRef->api());
 
     profileRef->release();
   } else if (vcmd.getState() == amd::PerfCounterCommand::End) {

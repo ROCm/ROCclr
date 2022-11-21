@@ -1230,6 +1230,7 @@ bool Resource::create(MemoryType memType, CreateParams* params, bool forceLinear
       svmPtr = reinterpret_cast<Pal::gpusize>(params->owner_->getSvmPtr());
       desc_.SVMRes_ = true;
       svmPtr = (svmPtr == 1) ? 0 : svmPtr;
+      desc_.reserved_va_ = (svmPtr == 1) ? false : true;
       if (params->owner_->getMemFlags() & CL_MEM_SVM_ATOMICS) {
         desc_.gl2CacheDisabled_ = true;
       }
@@ -1424,10 +1425,14 @@ bool Resource::partialMemCopyTo(VirtualGPU& gpu, const amd::Coord3D& srcOrigin,
     }
   }
 
-  if (dev().settings().disableSdma_) {
+  bool cp_dma = dev().settings().disableSdma_ ||
+      (!enableCopyRect && desc().buffer_ && dstResource.desc().buffer_ &&
+       (size[0] < dev().settings().cpDmaCopySizeMax_));
+  if (cp_dma) {
     // Make sure compute is done before CP DMA start
     gpu.addBarrier(RgpSqqtBarrierReason::MemDependency);
   } else {
+    gpu.releaseGpuMemoryFence();
     gpu.engineID_ = SdmaEngine;
   }
 
@@ -1517,7 +1522,7 @@ bool Resource::partialMemCopyTo(VirtualGPU& gpu, const amd::Coord3D& srcOrigin,
       copyRegion.dstOffset = dstOrigin[0] + dstResource.offset();
       copyRegion.copySize = size[0];
       constexpr size_t CpCopySizeLimit = (1 << 26) - sizeof(uint64_t);
-      if (dev().settings().disableSdma_ && (size[0] > CpCopySizeLimit)) {
+      if (cp_dma && (size[0] > CpCopySizeLimit)) {
         size_t orgSize = size[0];
         copyRegion.copySize = CpCopySizeLimit;
         do {
@@ -1535,7 +1540,7 @@ bool Resource::partialMemCopyTo(VirtualGPU& gpu, const amd::Coord3D& srcOrigin,
     }
   }
 
-  if (dev().settings().disableSdma_) {
+  if (cp_dma) {
     // Make sure CP dma is done
     gpu.addBarrier(RgpSqqtBarrierReason::MemDependency);
   }
@@ -2146,7 +2151,7 @@ bool ResourceCache::addGpuMemory(Resource::Descriptor* desc, GpuMemoryReference*
   // Make sure current allocation isn't bigger than cache
   if (((desc->type_ == Resource::Local) || (desc->type_ == Resource::Persistent) ||
        (desc->type_ == Resource::Remote) || (desc->type_ == Resource::RemoteUSWC)) &&
-      (size < cacheSizeLimit_) && !desc->SVMRes_) {
+      (size < cacheSizeLimit_ && !(desc->SVMRes_ && desc->reserved_va_))) {
     // Validate the cache size limit. Loop until we have enough space
     while ((cacheSize_ + size) > cacheSizeLimit_) {
       removeLast();
@@ -2197,8 +2202,8 @@ GpuMemoryReference* ResourceCache::findGpuMemory(Resource::Descriptor* desc, Pal
     return ref;
   }
 
-  // Early exit if resource is too big
-  if (size >= cacheSizeLimit_ || desc->SVMRes_) {
+  // Early exit if resource is too big or it's SVM allocation with a reserved VA
+  if (size >= cacheSizeLimit_ || (desc->SVMRes_ && desc->reserved_va_)) {
     //! \note we may need to free the cache here to reduce memory pressure
     return ref;
   }
@@ -2210,7 +2215,9 @@ GpuMemoryReference* ResourceCache::findGpuMemory(Resource::Descriptor* desc, Pal
     // Find if we can reuse this entry
     if ((entry->type_ == desc->type_) && (entry->flags_ == desc->flags_) && (size <= sizeRes) &&
         (size > (sizeRes >> 1)) && ((it.second->iMem()->Desc().gpuVirtAddr % alignment) == 0) &&
-        (entry->isAllocExecute_ == desc->isAllocExecute_)) {
+        (entry->isAllocExecute_ == desc->isAllocExecute_) &&
+        (entry->SVMRes_ == desc->SVMRes_) &&
+        (entry->gl2CacheDisabled_ == desc->gl2CacheDisabled_)) {
       ref = it.second;
       cacheSize_ -= sizeRes;
       if (entry->type_ == Resource::Local) {

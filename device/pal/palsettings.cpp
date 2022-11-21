@@ -171,6 +171,7 @@ Settings::Settings() {
   mallPolicy_ = 0;
   alwaysResident_ = amd::IS_HIP ? true : false;
   prepinnedMinSize_ = 0;
+  cpDmaCopySizeMax_ = GPU_CP_DMA_COPY_SIZE * Ki;
 }
 
 bool Settings::create(const Pal::DeviceProperties& palProp,
@@ -203,6 +204,7 @@ bool Settings::create(const Pal::DeviceProperties& palProp,
   amd::Os::getAppPathAndFileName(appName, appPathAndName);
 
   switch (palProp.revision) {
+    case Pal::AsicRevision::Phoenix1:
     case Pal::AsicRevision::Raphael:
     case Pal::AsicRevision::Rembrandt:
     case Pal::AsicRevision::Navi24:
@@ -221,6 +223,9 @@ bool Settings::create(const Pal::DeviceProperties& palProp,
     case Pal::AsicRevision::Navi12:
     case Pal::AsicRevision::Navi10:
     case Pal::AsicRevision::Navi10_A0:
+    case Pal::AsicRevision::Navi31:
+    case Pal::AsicRevision::Navi32:
+    case Pal::AsicRevision::Navi33:
       gfx10Plus_ = true;
       // Force luxmark to use HSAIL
       {
@@ -520,26 +525,26 @@ bool Settings::create(const Pal::DeviceProperties& palProp,
   }
 
   if (apuSystem_ &&
-      ((heaps[Pal::GpuHeapLocal].heapSize + heaps[Pal::GpuHeapInvisible].heapSize) < (150 * Mi))) {
+      ((heaps[Pal::GpuHeapLocal].logicalSize +
+        heaps[Pal::GpuHeapInvisible].logicalSize) < (150 * Mi))) {
     remoteAlloc_ = true;
   }
 
   // Update resource cache size
   if (remoteAlloc_) {
-    resourceCacheSize_ = std::max((heaps[Pal::GpuHeapGartUswc].heapSize / 8),
+    resourceCacheSize_ = std::max((heaps[Pal::GpuHeapGartUswc].logicalSize / 8),
                                   (uint64_t)GPU_RESOURCE_CACHE_SIZE * Mi);
   } else {
-    resourceCacheSize_ =
-        std::max(((heaps[Pal::GpuHeapLocal].heapSize + heaps[Pal::GpuHeapInvisible].heapSize) / 8),
-                 (uint64_t)GPU_RESOURCE_CACHE_SIZE * Mi);
+    resourceCacheSize_ = std::max(((heaps[Pal::GpuHeapLocal].logicalSize +
+      heaps[Pal::GpuHeapInvisible].logicalSize) / 8), (uint64_t)GPU_RESOURCE_CACHE_SIZE * Mi);
 #if !defined(_LP64)
     resourceCacheSize_ = std::min(resourceCacheSize_, 1 * Gi);
 #endif
   }
 
   // If is Rebar, override prepinned memory size.
-  if ((heaps[Pal::GpuHeapInvisible].heapSize == 0) &&
-      (heaps[Pal::GpuHeapLocal].heapSize > 256 * Mi)) {
+  if ((heaps[Pal::GpuHeapInvisible].logicalSize == 0) &&
+      (heaps[Pal::GpuHeapLocal].logicalSize > 256 * Mi)) {
     prepinnedMinSize_ = PAL_PREPINNED_MEMORY_SIZE * Ki;
   }
 
