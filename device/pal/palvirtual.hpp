@@ -26,7 +26,6 @@
 #include "device/pal/palprintf.hpp"
 #include "device/pal/paltimestamp.hpp"
 #include "device/pal/palsched.hpp"
-#include "device/pal/paldebugger.hpp"
 #include "device/pal/palgpuopen.hpp"
 #include "platform/commandqueue.hpp"
 #include "device/blit.hpp"
@@ -634,16 +633,6 @@ class VirtualGPU : public device::VirtualDevice {
                   const amd::BufferRect& dstRect   //!< region of destination for copy
   );
 
-  void buildKernelInfo(const HSAILKernel& hsaKernel,          //!< hsa kernel
-                       hsa_kernel_dispatch_packet_t* aqlPkt,  //!< aql packet for dispatch
-                       HwDbgKernelInfo& kernelInfo,           //!< kernel info for the dispatch
-                       amd::Event* enqueueEvent  //!< Event provided in the enqueue kernel command
-  );
-
-  void assignDebugTrapHandler(const DebugToolInfo& dbgSetting,  //!< debug settings
-                              HwDbgKernelInfo& kernelInfo       //!< kernel info for the dispatch
-  );
-
   void PrintChildren(const HSAILKernel& hsaKernel,  //!< The parent HSAIL kernel
                      VirtualGPU* gpuDefQueue        //!< Device queue for children execution
   );
@@ -708,7 +697,7 @@ class VirtualGPU : public device::VirtualDevice {
 inline void VirtualGPU::logVmMemory(const std::string name, const Memory* memory) {
   if (PAL_EMBED_KERNEL_MD || (AMD_LOG_LEVEL >= amd::LOG_INFO)) {
     char buf[256];
-    sprintf(buf, "%s = ptr:[%p-%p] size:[%lld] heap[%d]", name.c_str(),
+    sprintf(buf, "%s = ptr:[%p-%p] size:[%lu] heap[%d]", name.c_str(),
             reinterpret_cast<void*>(memory->vmAddress()),
             reinterpret_cast<void*>(memory->vmAddress() + memory->size()),
             memory->iMem()->Desc().size, memory->iMem()->Desc().heaps[0]);

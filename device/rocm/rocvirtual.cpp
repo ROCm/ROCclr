@@ -475,8 +475,12 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
 // ================================================================================================
 std::vector<hsa_signal_t>& VirtualGPU::HwQueueTracker::WaitingSignal(HwQueueEngine engine) {
   bool explicit_wait = false;
+  bool sdma_wait = false;
   // Reset all current waiting signals
   waiting_signals_.clear();
+
+  if(engine != HwQueueEngine::Compute)
+    sdma_wait = true;
 
   // Does runtime switch the active engine?
   if (engine != engine_) {
@@ -518,7 +522,7 @@ std::vector<hsa_signal_t>& VirtualGPU::HwQueueTracker::WaitingSignal(HwQueueEngi
       if (hsa_signal_load_relaxed(external_signals_[i]->signal_) > 0) {
         const Settings& settings = gpu_.dev().settings();
         // Actively wait on CPU to avoid extra overheads of signal tracking on GPU
-        if (!WaitForSignal<true>(external_signals_[i]->signal_)) {
+        if (!WaitForSignal<true>(external_signals_[i]->signal_, false, sdma_wait)) {
           if (settings.cpu_wait_for_signal_) {
             // Wait on CPU for completion if requested
             CpuWaitForSignal(external_signals_[i]);
@@ -1028,6 +1032,59 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
 }
 
 // ================================================================================================
+void VirtualGPU::dispatchBarrierValuePacket(uint16_t packetHeader, hsa_signal_t signal,
+                                            hsa_signal_value_t value, hsa_signal_value_t mask,
+                                            hsa_signal_condition32_t cond, bool skipTs,
+                                            hsa_signal_t completionSignal) {
+  hsa_amd_barrier_value_packet_t barrier_value_packet_ = {0};
+  uint16_t rest = HSA_AMD_PACKET_TYPE_BARRIER_VALUE;
+  const uint32_t queueSize = gpu_queue_->size;
+  const uint32_t queueMask = queueSize - 1;
+
+  barrier_value_packet_.signal = signal;
+  barrier_value_packet_.value = value;
+  barrier_value_packet_.mask = mask;
+  barrier_value_packet_.cond = cond;
+
+  if (completionSignal.handle == 0) {
+    // Get active signal for current dispatch if profiling is necessary
+    barrier_value_packet_.completion_signal =
+      Barriers().ActiveSignal(kInitSignalValueOne, skipTs ? nullptr : timestamp_);
+  } else {
+    // Attach external signal to the packet
+    barrier_value_packet_.completion_signal = completionSignal;
+  }
+
+  uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, 1);
+  while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= queueMask);
+  hsa_amd_barrier_value_packet_t* aql_loc = &(reinterpret_cast<hsa_amd_barrier_value_packet_t*>(
+      gpu_queue_->base_address))[index & queueMask];
+  *aql_loc = barrier_value_packet_;
+  packet_store_release(reinterpret_cast<uint32_t*>(aql_loc), packetHeader, rest);
+
+  auto cache_state = extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
+                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
+
+  hsa_signal_store_screlease(gpu_queue_->doorbell_signal, index);
+
+  ClPrint(amd::LOG_DEBUG, amd::LOG_AQL,
+          "HWq=0x%zx, BarrierValue Header = 0x%x AmdFormat = 0x%x ",
+          "(type=%d, barrier=%d, acquire=%d, release=%d), "
+          "completion_signal=0x%zx value = 0x%llx mask = 0x%llx cond: %d (GTE: %d EQ: %d NE: %d)",
+          gpu_queue_, packetHeader, rest,
+          extractAqlBits(packetHeader, HSA_PACKET_HEADER_TYPE, HSA_PACKET_HEADER_WIDTH_TYPE),
+          extractAqlBits(packetHeader, HSA_PACKET_HEADER_BARRIER, HSA_PACKET_HEADER_WIDTH_BARRIER),
+          extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE,
+                         HSA_PACKET_HEADER_WIDTH_SCACQUIRE_FENCE_SCOPE),
+          cache_state,
+          barrier_value_packet_.completion_signal,
+          barrier_value_packet_.value,
+          barrier_value_packet_.mask,
+          barrier_value_packet_.cond,
+          HSA_SIGNAL_CONDITION_GTE, HSA_SIGNAL_CONDITION_EQ, HSA_SIGNAL_CONDITION_NE);
+}
+
+// ================================================================================================
 void VirtualGPU::ResetQueueStates() {
   // Release all transfer buffers on this command queue
   releaseXferWrite();
@@ -1195,7 +1252,7 @@ bool VirtualGPU::create() {
     return false;
   }
 
-  // Initialize barrier packet.
+  // Initialize barrier and barrier value packets
   memset(&barrier_packet_, 0, sizeof(barrier_packet_));
   barrier_packet_.header = kInvalidAql;
 
@@ -1878,6 +1935,7 @@ void VirtualGPU::submitSvmCopyMemory(amd::SvmCopyMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 void VirtualGPU::submitCopyMemoryP2P(amd::CopyMemoryP2PCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -1974,6 +2032,7 @@ void VirtualGPU::submitCopyMemoryP2P(amd::CopyMemoryP2PCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 void VirtualGPU::submitSvmMapMemory(amd::SvmMapMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2011,6 +2070,7 @@ void VirtualGPU::submitSvmMapMemory(amd::SvmMapMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 void VirtualGPU::submitSvmUnmapMemory(amd::SvmUnmapMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2050,6 +2110,7 @@ void VirtualGPU::submitSvmUnmapMemory(amd::SvmUnmapMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 void VirtualGPU::submitMapMemory(amd::MapMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2149,6 +2210,7 @@ void VirtualGPU::submitMapMemory(amd::MapMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2239,6 +2301,7 @@ void VirtualGPU::submitUnmapMemory(amd::UnmapMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const void* pattern,
                             size_t patternSize, const amd::Coord3D& surface,
                             const amd::Coord3D& origin, const amd::Coord3D& size,
@@ -2302,6 +2365,7 @@ bool VirtualGPU::fillMemory(cl_command_type type, amd::Memory* amdMemory, const 
   return true;
 }
 
+// ================================================================================================
 void VirtualGPU::submitFillMemory(amd::FillMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2324,41 +2388,7 @@ void VirtualGPU::submitFillMemory(amd::FillMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
-void VirtualGPU::dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t* packet,
-                                            hsa_amd_vendor_packet_header_t header) {
-  assert(packet->completion_signal.handle != 0);
-  const uint32_t queueSize = gpu_queue_->size;
-  const uint32_t queueMask = queueSize - 1;
-
-  uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, 1);
-  while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= queueMask) {
-    amd::Os::yield();
-  }
-  hsa_amd_barrier_value_packet_t* aql_loc = &(reinterpret_cast<hsa_amd_barrier_value_packet_t*>(
-      gpu_queue_->base_address))[index & queueMask];
-  *aql_loc = *packet;
-  unsigned int* headerPtr = reinterpret_cast<unsigned int*>(&header);
-  __atomic_store_n(reinterpret_cast<uint32_t*>(aql_loc), *headerPtr, __ATOMIC_RELEASE);
-
-  auto cache_state = extractAqlBits(header.header, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
-                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
-
-  hsa_signal_store_screlease(gpu_queue_->doorbell_signal, index);
-
-  ClPrint(amd::LOG_DEBUG, amd::LOG_AQL,
-          "HWq=0x%zx, BarrierValue Header = 0x%x AmdFormat = 0x%x ",
-          "(type=%d, barrier=%d, acquire=%d, release=%d), "
-          "completion_signal=0x%zx value = 0x%llx mask = 0x%llx cond: %d (GTE: %d EQ: %d NE: %d)",
-          gpu_queue_, header.header, header.AmdFormat,
-          extractAqlBits(header.header, HSA_PACKET_HEADER_TYPE, HSA_PACKET_HEADER_WIDTH_TYPE),
-          extractAqlBits(header.header, HSA_PACKET_HEADER_BARRIER, HSA_PACKET_HEADER_WIDTH_BARRIER),
-          extractAqlBits(header.header, HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE,
-                         HSA_PACKET_HEADER_WIDTH_SCACQUIRE_FENCE_SCOPE),
-          cache_state,
-          packet->completion_signal, packet->value, packet->mask, packet->cond,
-          HSA_SIGNAL_CONDITION_GTE, HSA_SIGNAL_CONDITION_EQ, HSA_SIGNAL_CONDITION_NE);
-}
-
+// ================================================================================================
 void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2376,44 +2406,38 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
 
   if (type == ROCCLR_COMMAND_STREAM_WAIT_VALUE) {
     if (GPU_STREAMOPS_CP_WAIT) {
-      hsa_amd_barrier_value_packet_t aqlPacket;
-      hsa_amd_vendor_packet_header_t header;
-      hsa_signal_t signal;
+      uint16_t header = kBarrierVendorPacketHeader;
       Buffer* buff = static_cast<Buffer*>(memory);
-
-      header.header = kBarrierVendorPacketHeader;
-      header.AmdFormat = HSA_AMD_PACKET_TYPE_BARRIER_VALUE;
-      aqlPacket.signal = buff->getSignal();
-      aqlPacket.completion_signal = Barriers().ActiveSignal();
+      hsa_signal_t signal = buff->getSignal();
 
       // mask is always applied on value at signal before performing
       // the comparision defiend by 'condition'
       switch (flags) {
-        case ROCCLR_STREAM_WAIT_VALUE_GTE:
-          aqlPacket.value = value;
-          aqlPacket.mask = mask;
-          aqlPacket.cond = HSA_SIGNAL_CONDITION_GTE;
+        case ROCCLR_STREAM_WAIT_VALUE_GTE: {
+          dispatchBarrierValuePacket(header, signal, value, mask,
+                                     HSA_SIGNAL_CONDITION_GTE, true);
           break;
-        case ROCCLR_STREAM_WAIT_VALUE_EQ:
-          aqlPacket.value = value;
-          aqlPacket.mask = mask;
-          aqlPacket.cond = HSA_SIGNAL_CONDITION_EQ;
+        }
+        case ROCCLR_STREAM_WAIT_VALUE_EQ: {
+          dispatchBarrierValuePacket(header, signal, value, mask,
+                                     HSA_SIGNAL_CONDITION_EQ, true);
           break;
-        case ROCCLR_STREAM_WAIT_VALUE_AND:
-          aqlPacket.value = 0;
-          aqlPacket.mask = (value & mask);
-          aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
+        }
+        case ROCCLR_STREAM_WAIT_VALUE_AND: {
+          dispatchBarrierValuePacket(header, signal, 0, (value & mask),
+                                     HSA_SIGNAL_CONDITION_NE, true);
           break;
-        case ROCCLR_STREAM_WAIT_VALUE_NOR:
-          aqlPacket.value = ~value & mask;
-          aqlPacket.mask = ~value & mask;
-          aqlPacket.cond = HSA_SIGNAL_CONDITION_NE;
+        }
+        case ROCCLR_STREAM_WAIT_VALUE_NOR: {
+          uint64_t norValue = ~value & mask;
+          dispatchBarrierValuePacket(header, signal, norValue, norValue,
+                                    HSA_SIGNAL_CONDITION_NE, true);
           break;
+        }
         default:
           ShouldNotReachHere();
           break;
       }
-      dispatchBarrierValuePacket(&aqlPacket, header);
     }
     // Use a blit kernel to perform the wait operation
     else {
@@ -2445,6 +2469,7 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 void VirtualGPU::submitSvmFillMemory(amd::SvmFillMemoryCommand& cmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2483,6 +2508,7 @@ void VirtualGPU::submitSvmFillMemory(amd::SvmFillMemoryCommand& cmd) {
   profilingEnd(cmd);
 }
 
+// ================================================================================================
 void VirtualGPU::submitMigrateMemObjects(amd::MigrateMemObjectsCommand& vcmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());
@@ -2513,6 +2539,7 @@ void VirtualGPU::submitMigrateMemObjects(amd::MigrateMemObjectsCommand& vcmd) {
   profilingEnd(vcmd);
 }
 
+// ================================================================================================
 static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
   if (status != HSA_STATUS_SUCCESS && status != HSA_STATUS_INFO_BREAK) {
     // Abort on device exceptions.
@@ -2538,6 +2565,7 @@ static void callbackQueue(hsa_status_t status, hsa_queue_t* queue, void* data) {
   }
 }
 
+// ================================================================================================
 bool VirtualGPU::createSchedulerParam()
 {
   if (nullptr != schedulerParam_) {
@@ -2595,12 +2623,14 @@ bool VirtualGPU::createSchedulerParam()
   return false;
 }
 
+// ================================================================================================
 uint64_t VirtualGPU::getVQVirtualAddress()
 {
   Memory* vqMem = dev().getRocMemory(virtualQueue_);
   return reinterpret_cast<uint64_t>(vqMem->getDeviceMemory());
 }
 
+// ================================================================================================
 bool VirtualGPU::createVirtualQueue(uint deviceQueueSize)
 {
   uint MinDeviceQueueSize = 16 * 1024;

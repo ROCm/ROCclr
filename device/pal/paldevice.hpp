@@ -533,9 +533,6 @@ class Device : public NullDevice {
   //! Returns SRD manger object
   SrdManager& srds() const { return *srdManager_; }
 
-  //! Initial the Hardware Debug Manager
-  int32_t hwDebugManagerInit(amd::Context* context, uintptr_t messageStorage);
-
   //! Returns PAL device properties
   const Pal::DeviceProperties& properties() const { return properties_; }
 
@@ -618,7 +615,7 @@ class Device : public NullDevice {
   virtual bool findLinkInfo(const amd::Device& other_device,
                             std::vector<LinkAttrType>* link_attr) {
     // Unsupported in PAL
-    LogPrintfError("The function is unsupported on Windows");
+    LogError("The function is unsupported on Windows");
     return false;
   }
 

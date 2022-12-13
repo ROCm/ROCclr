@@ -44,15 +44,20 @@ constexpr static hsa_signal_value_t kInitSignalValueOne = 1;
 constexpr static uint64_t kTimeout100us = 100 * K;
 constexpr static uint64_t kUnlimitedWait = std::numeric_limits<uint64_t>::max();
 
+// Active wait time out incase same sdma engine is used again,
+// then just wait instead of adding dependency wait signal.
+constexpr static uint64_t kSDMAEngineTimeout = 10;
+
 template <bool active_wait_timeout = false>
-inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false) {
+inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false, bool sdma_wait = false) {
   if (hsa_signal_load_relaxed(signal) > 0) {
     uint64_t timeout = kTimeout100us;
     if (active_wait) {
       timeout = kUnlimitedWait;
     }
     if (active_wait_timeout) {
-      timeout = ROC_ACTIVE_WAIT_TIMEOUT * K;
+      // If diff engine, wait to 10 ms. Otherwise no wait
+      timeout = (sdma_wait ? kSDMAEngineTimeout : ROC_ACTIVE_WAIT_TIMEOUT) * K;
       if (timeout == 0) {
         return false;
       }
@@ -419,8 +424,13 @@ class VirtualGPU : public device::VirtualDevice {
                              hsa_signal_t signal = hsa_signal_t{0});
   bool dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet, const uint32_t gfxVersion,
                                 bool blocking, const hsa_ven_amd_aqlprofile_1_00_pfn_t* extApi);
-  void dispatchBarrierValuePacket(const hsa_amd_barrier_value_packet_t* packet,
-                                  hsa_amd_vendor_packet_header_t header);
+  void dispatchBarrierValuePacket(uint16_t packetHeader,
+                                  hsa_signal_t signal = hsa_signal_t{0},
+                                  hsa_signal_value_t value = 0,
+                                  hsa_signal_value_t mask = 0,
+                                  hsa_signal_condition32_t cond = HSA_SIGNAL_CONDITION_EQ,
+                                  bool skipTs = false,
+                                  hsa_signal_t completionSignal = hsa_signal_t{0});
   void initializeDispatchPacket(hsa_kernel_dispatch_packet_t* packet,
                                 amd::NDRangeContainer& sizes);
 
