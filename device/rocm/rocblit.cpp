@@ -2682,31 +2682,13 @@ bool KernelBlitManager::runScheduler(uint64_t vqVM, amd::Memory* schedulerParam,
 
   Memory* schedulerMem = dev().getRocMemory(schedulerParam);
   sp->kernarg_address = reinterpret_cast<uint64_t>(schedulerMem->getDeviceMemory());
-
-  sp->hidden_global_offset_x = 0;
-  sp->hidden_global_offset_y = 0;
-  sp->hidden_global_offset_z = 0;
   sp->thread_counter = 0;
   sp->child_queue = reinterpret_cast<uint64_t>(schedulerQueue);
   sp->complete_signal = schedulerSignal;
 
   hsa_signal_store_relaxed(schedulerSignal, kInitSignalValueOne);
 
-  sp->scheduler_aql.header = (HSA_PACKET_TYPE_KERNEL_DISPATCH << HSA_PACKET_HEADER_TYPE) |
-                             (1 << HSA_PACKET_HEADER_BARRIER) |
-                             (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
-                             (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
-  sp->scheduler_aql.setup = 1;
-  sp->scheduler_aql.workgroup_size_x = 1;
-  sp->scheduler_aql.workgroup_size_y = 1;
-  sp->scheduler_aql.workgroup_size_z = 1;
-  sp->scheduler_aql.grid_size_x = threads;
-  sp->scheduler_aql.grid_size_y = 1;
-  sp->scheduler_aql.grid_size_z = 1;
-  sp->scheduler_aql.kernel_object = gpuKernel.KernelCodeHandle();
-  sp->scheduler_aql.kernarg_address = (void*)sp->kernarg_address;
-  sp->scheduler_aql.private_segment_size = 0;
-  sp->scheduler_aql.group_segment_size = 0;
+
   sp->vqueue_header = vqVM;
 
   sp->parentAQL = sp->kernarg_address + sizeof(SchedulerParam);
@@ -2721,7 +2703,7 @@ bool KernelBlitManager::runScheduler(uint64_t vqVM, amd::Memory* schedulerParam,
   address parameters = captureArguments(kernels_[Scheduler]);
 
   if (!gpu().submitKernelInternal(ndrange, *kernels_[Scheduler],
-                                  parameters, nullptr)) {
+                                  parameters, nullptr, 0, nullptr, &sp->scheduler_aql)) {
     return false;
   }
   releaseArguments(parameters);
