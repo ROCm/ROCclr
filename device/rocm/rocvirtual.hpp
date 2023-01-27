@@ -425,6 +425,7 @@ class VirtualGPU : public device::VirtualDevice {
   bool dispatchCounterAqlPacket(hsa_ext_amd_aql_pm4_packet_t* packet, const uint32_t gfxVersion,
                                 bool blocking, const hsa_ven_amd_aqlprofile_1_00_pfn_t* extApi);
   void dispatchBarrierValuePacket(uint16_t packetHeader,
+                                  bool resolveDepSignal = false,
                                   hsa_signal_t signal = hsa_signal_t{0},
                                   hsa_signal_value_t value = 0,
                                   hsa_signal_value_t mask = 0,
@@ -470,7 +471,9 @@ class VirtualGPU : public device::VirtualDevice {
                   const amd::Coord3D& dstOrigin,   //!< destination memory object
                   const amd::Coord3D& size,        //!< copy size
                   const amd::BufferRect& srcRect,  //!< region of source for copy
-                  const amd::BufferRect& dstRect   //!< region of destination for copy
+                  const amd::BufferRect& dstRect,   //!< region of destination for copy
+                  amd::CopyMetadata copyMetadata =
+                           amd::CopyMetadata()      //!< Memory copy MetaData
                   );
 
   //! Updates AQL header for the upcomming dispatch

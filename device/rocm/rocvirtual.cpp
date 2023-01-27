@@ -103,6 +103,11 @@ static constexpr uint16_t kBarrierVendorPacketHeader =
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
+static constexpr uint16_t kBarrierVendorPacketAgentScopeHeader =
+    (HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE) | (1 << HSA_PACKET_HEADER_BARRIER) |
+    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
+    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
+
 static constexpr hsa_barrier_and_packet_t kBarrierAcquirePacket = {
     kBarrierPacketAcquireHeader, 0, 0, {{0}}, 0, {0}};
 
@@ -1032,10 +1037,10 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
 }
 
 // ================================================================================================
-void VirtualGPU::dispatchBarrierValuePacket(uint16_t packetHeader, hsa_signal_t signal,
-                                            hsa_signal_value_t value, hsa_signal_value_t mask,
-                                            hsa_signal_condition32_t cond, bool skipTs,
-                                            hsa_signal_t completionSignal) {
+void VirtualGPU::dispatchBarrierValuePacket(uint16_t packetHeader, bool resolveDepSignal,
+                                            hsa_signal_t signal, hsa_signal_value_t value,
+                                            hsa_signal_value_t mask, hsa_signal_condition32_t cond,
+                                            bool skipTs, hsa_signal_t completionSignal) {
   hsa_amd_barrier_value_packet_t barrier_value_packet_ = {0};
   uint16_t rest = HSA_AMD_PACKET_TYPE_BARRIER_VALUE;
   const uint32_t queueSize = gpu_queue_->size;
@@ -1045,6 +1050,19 @@ void VirtualGPU::dispatchBarrierValuePacket(uint16_t packetHeader, hsa_signal_t 
   barrier_value_packet_.value = value;
   barrier_value_packet_.mask = mask;
   barrier_value_packet_.cond = cond;
+
+  // Dependent signal and external signal cant be true at the same time
+  assert(resolveDepSignal & (signal.handle != 0) == 0);
+  if (resolveDepSignal) {
+    auto wait_signal = Barriers().WaitingSignal();
+    if (wait_signal.size() > 0) {
+      assert(wait_signal.size() == 1 && "Only one dep signal allowed for BarrierValue");
+      barrier_value_packet_.signal = wait_signal[0];
+      barrier_value_packet_.value = kInitSignalValueOne;
+      barrier_value_packet_.mask = std::numeric_limits<int64_t>::max();
+      barrier_value_packet_.cond = HSA_SIGNAL_CONDITION_LT;
+    }
+  }
 
   if (completionSignal.handle == 0) {
     // Get active signal for current dispatch if profiling is necessary
@@ -1068,20 +1086,21 @@ void VirtualGPU::dispatchBarrierValuePacket(uint16_t packetHeader, hsa_signal_t 
   hsa_signal_store_screlease(gpu_queue_->doorbell_signal, index);
 
   ClPrint(amd::LOG_DEBUG, amd::LOG_AQL,
-          "HWq=0x%zx, BarrierValue Header = 0x%x AmdFormat = 0x%x ",
+          "HWq=0x%zx, BarrierValue Header = 0x%x AmdFormat = 0x%x "
           "(type=%d, barrier=%d, acquire=%d, release=%d), "
-          "completion_signal=0x%zx value = 0x%llx mask = 0x%llx cond: %d (GTE: %d EQ: %d NE: %d)",
+          "signal=0x%zx, value = 0x%llx mask = 0x%llx cond: %s, completion_signal=0x%zx",
           gpu_queue_, packetHeader, rest,
           extractAqlBits(packetHeader, HSA_PACKET_HEADER_TYPE, HSA_PACKET_HEADER_WIDTH_TYPE),
           extractAqlBits(packetHeader, HSA_PACKET_HEADER_BARRIER, HSA_PACKET_HEADER_WIDTH_BARRIER),
           extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCACQUIRE_FENCE_SCOPE,
                          HSA_PACKET_HEADER_WIDTH_SCACQUIRE_FENCE_SCOPE),
           cache_state,
-          barrier_value_packet_.completion_signal,
+          barrier_value_packet_.signal,
           barrier_value_packet_.value,
           barrier_value_packet_.mask,
-          barrier_value_packet_.cond,
-          HSA_SIGNAL_CONDITION_GTE, HSA_SIGNAL_CONDITION_EQ, HSA_SIGNAL_CONDITION_NE);
+          barrier_value_packet_.cond == 0 ? "EQ" : barrier_value_packet_.cond == 1 ?
+                                        "NE" : barrier_value_packet_.cond == 2 ? "LT" : "GTE",
+          barrier_value_packet_.completion_signal);
 }
 
 // ================================================================================================
@@ -1534,9 +1553,9 @@ void VirtualGPU::submitReadMemory(amd::ReadMemoryCommand& cmd) {
         // Accelerated transfer without pinning
         amd::Coord3D dstOrigin(offset);
         result = blitMgr().copyBuffer(*devMem, *hostMemory, origin, dstOrigin, size,
-                                      cmd.isEntireMemory());
+                                      cmd.isEntireMemory(), cmd.copyMetadata());
       } else {
-        result = blitMgr().readBuffer(*devMem, dst, origin, size, cmd.isEntireMemory());
+        result = blitMgr().readBuffer(*devMem, dst, origin, size, cmd.isEntireMemory(), cmd.copyMetadata());
       }
       break;
     }
@@ -1548,10 +1567,10 @@ void VirtualGPU::submitReadMemory(amd::ReadMemoryCommand& cmd) {
                             cmd.hostRect().slicePitch_);
       if (hostMemory != nullptr) {
         result = blitMgr().copyBufferRect(*devMem, *hostMemory, cmd.bufRect(), hostbufferRect,
-                                          size, cmd.isEntireMemory());
+                                          size, cmd.isEntireMemory(), cmd.copyMetadata());
       } else {
         result = blitMgr().readBufferRect(*devMem, dst, cmd.bufRect(), cmd.hostRect(), size,
-                                          cmd.isEntireMemory());
+                                          cmd.isEntireMemory(), cmd.copyMetadata());
       }
       break;
     }
@@ -1576,10 +1595,10 @@ void VirtualGPU::submitReadMemory(amd::ReadMemoryCommand& cmd) {
         amd::Coord3D dstOrigin(offset);
         result =
             blitMgr().copyImageToBuffer(*devMem, *hostMemory, cmd.origin(), dstOrigin, size,
-                                        cmd.isEntireMemory(), cmd.rowPitch(), cmd.slicePitch());
+                                        cmd.isEntireMemory(), cmd.rowPitch(), cmd.slicePitch(), cmd.copyMetadata());
       } else {
         result = blitMgr().readImage(*devMem, dst, cmd.origin(), size, cmd.rowPitch(),
-                                     cmd.slicePitch(), cmd.isEntireMemory());
+                                     cmd.slicePitch(), cmd.isEntireMemory(), cmd.copyMetadata());
       }
       break;
     }
@@ -1641,9 +1660,9 @@ void VirtualGPU::submitWriteMemory(amd::WriteMemoryCommand& cmd) {
         // Accelerated transfer without pinning
         amd::Coord3D srcOrigin(offset);
         result = blitMgr().copyBuffer(*hostMemory, *devMem, srcOrigin, origin, size,
-                                      cmd.isEntireMemory());
+                                      cmd.isEntireMemory(), cmd.copyMetadata());
       } else {
-        result = blitMgr().writeBuffer(src, *devMem, origin, size, cmd.isEntireMemory());
+        result = blitMgr().writeBuffer(src, *devMem, origin, size, cmd.isEntireMemory(), cmd.copyMetadata());
       }
       break;
     }
@@ -1655,10 +1674,10 @@ void VirtualGPU::submitWriteMemory(amd::WriteMemoryCommand& cmd) {
                             cmd.hostRect().slicePitch_);
       if (hostMemory != nullptr) {
         result = blitMgr().copyBufferRect(*hostMemory, *devMem, hostbufferRect, cmd.bufRect(),
-                                          size, cmd.isEntireMemory());
+                                          size, cmd.isEntireMemory(), cmd.copyMetadata());
       } else {
         result = blitMgr().writeBufferRect(src, *devMem, cmd.hostRect(), cmd.bufRect(), size,
-                                          cmd.isEntireMemory());
+                                          cmd.isEntireMemory(), cmd.copyMetadata());
       }
       break;
     }
@@ -1668,10 +1687,11 @@ void VirtualGPU::submitWriteMemory(amd::WriteMemoryCommand& cmd) {
         amd::Coord3D srcOrigin(offset);
         result =
             blitMgr().copyBufferToImage(*hostMemory, *devMem, srcOrigin, cmd.origin(), size,
-                                        cmd.isEntireMemory(), cmd.rowPitch(), cmd.slicePitch());
+                                        cmd.isEntireMemory(), cmd.rowPitch(), cmd.slicePitch(),
+                                        cmd.copyMetadata());
       } else {
         result = blitMgr().writeImage(src, *devMem, cmd.origin(), size, cmd.rowPitch(),
-                                      cmd.slicePitch(), cmd.isEntireMemory());
+                                      cmd.slicePitch(), cmd.isEntireMemory(), cmd.copyMetadata());
       }
       break;
     }
@@ -1752,7 +1772,8 @@ void VirtualGPU::submitSvmPrefetchAsync(amd::SvmPrefetchAsyncCommand& cmd) {
 bool VirtualGPU::copyMemory(cl_command_type type, amd::Memory& srcMem, amd::Memory& dstMem,
                             bool entire, const amd::Coord3D& srcOrigin,
                             const amd::Coord3D& dstOrigin, const amd::Coord3D& size,
-                            const amd::BufferRect& srcRect, const amd::BufferRect& dstRect) {
+                            const amd::BufferRect& srcRect, const amd::BufferRect& dstRect,
+                            amd::CopyMetadata copyMetadata) {
   Memory* srcDevMem = dev().getRocMemory(&srcMem);
   Memory* dstDevMem = dev().getRocMemory(&dstMem);
 
@@ -1796,23 +1817,28 @@ bool VirtualGPU::copyMemory(cl_command_type type, amd::Memory& srcMem, amd::Memo
         realSize.c[0] *= elemSize;
       }
 
-      result = blitMgr().copyBuffer(*srcDevMem, *dstDevMem, realSrcOrigin, realDstOrigin, realSize, entire);
+      result = blitMgr().copyBuffer(*srcDevMem, *dstDevMem, realSrcOrigin, realDstOrigin, 
+                                    realSize, entire, copyMetadata);
       break;
     }
     case CL_COMMAND_COPY_BUFFER_RECT: {
-      result = blitMgr().copyBufferRect(*srcDevMem, *dstDevMem, srcRect, dstRect, size, entire);
+      result = blitMgr().copyBufferRect(*srcDevMem, *dstDevMem, srcRect, dstRect, size, entire,
+                                        copyMetadata);
       break;
     }
     case CL_COMMAND_COPY_IMAGE: {
-      result = blitMgr().copyImage(*srcDevMem, *dstDevMem, srcOrigin, dstOrigin, size, entire);
+      result = blitMgr().copyImage(*srcDevMem, *dstDevMem, srcOrigin, dstOrigin, size, entire,
+                                   copyMetadata);
       break;
     }
     case CL_COMMAND_COPY_IMAGE_TO_BUFFER: {
-      result = blitMgr().copyImageToBuffer(*srcDevMem, *dstDevMem, srcOrigin, dstOrigin, size, entire);
+        result = blitMgr().copyImageToBuffer(*srcDevMem, *dstDevMem, srcOrigin, dstOrigin, size, entire,
+                                           dstRect.rowPitch_, dstRect.slicePitch_, copyMetadata);
       break;
     }
     case CL_COMMAND_COPY_BUFFER_TO_IMAGE: {
-      result = blitMgr().copyBufferToImage(*srcDevMem, *dstDevMem, srcOrigin, dstOrigin, size, entire);
+        result = blitMgr().copyBufferToImage(*srcDevMem, *dstDevMem, srcOrigin, dstOrigin, size, entire,
+                                           srcRect.rowPitch_, srcRect.slicePitch_, copyMetadata);
       break;
     }
     default:
@@ -1841,7 +1867,7 @@ void VirtualGPU::submitCopyMemory(amd::CopyMemoryCommand& cmd) {
   bool entire = cmd.isEntireMemory();
 
   if (!copyMemory(type, cmd.source(), cmd.destination(), entire, cmd.srcOrigin(),
-                  cmd.dstOrigin(), cmd.size(), cmd.srcRect(), cmd.dstRect())) {
+                  cmd.dstOrigin(), cmd.size(), cmd.srcRect(), cmd.dstRect(), cmd.copyMetadata())) {
     cmd.setStatus(CL_INVALID_OPERATION);
   }
 
@@ -2414,23 +2440,23 @@ void VirtualGPU::submitStreamOperation(amd::StreamOperationCommand& cmd) {
       // the comparision defiend by 'condition'
       switch (flags) {
         case ROCCLR_STREAM_WAIT_VALUE_GTE: {
-          dispatchBarrierValuePacket(header, signal, value, mask,
+          dispatchBarrierValuePacket(header, false, signal, value, mask,
                                      HSA_SIGNAL_CONDITION_GTE, true);
           break;
         }
         case ROCCLR_STREAM_WAIT_VALUE_EQ: {
-          dispatchBarrierValuePacket(header, signal, value, mask,
+          dispatchBarrierValuePacket(header,false, signal, value, mask,
                                      HSA_SIGNAL_CONDITION_EQ, true);
           break;
         }
         case ROCCLR_STREAM_WAIT_VALUE_AND: {
-          dispatchBarrierValuePacket(header, signal, 0, (value & mask),
+          dispatchBarrierValuePacket(header, false, signal, 0, (value & mask),
                                      HSA_SIGNAL_CONDITION_NE, true);
           break;
         }
         case ROCCLR_STREAM_WAIT_VALUE_NOR: {
           uint64_t norValue = ~value & mask;
-          dispatchBarrierValuePacket(header, signal, norValue, norValue,
+          dispatchBarrierValuePacket(header, false, signal, norValue, norValue,
                                     HSA_SIGNAL_CONDITION_NE, true);
           break;
         }
@@ -2901,21 +2927,30 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
         case amd::KernelParameterDescriptor::HiddenMultiGridSync: {
           uint64_t gridSync = coopGroups ? 1 : 0;
           bool multiGrid = (vcmd != nullptr) ? vcmd->cooperativeMultiDeviceGroups() : false;
+          Device::MGSyncInfo* syncInfo = nullptr;
           if (multiGrid) {
             // Find CPU pointer to the right sync info structure. It should be after MGSyncData
-            Device::MGSyncInfo* syncInfo = reinterpret_cast<Device::MGSyncInfo*>(
-                dev().MGSync() + Device::kMGInfoSizePerDevice * dev().index() + Device::kMGSyncDataSize);
+            syncInfo = reinterpret_cast<Device::MGSyncInfo*>(
+              dev().MGSync() + Device::kMGInfoSizePerDevice * dev().index() + Device::kMGSyncDataSize);
             // Update sync data address. Use the offset adjustment to the right location
             syncInfo->mgs = reinterpret_cast<Device::MGSyncData*>(dev().MGSync() +
-              Device::kMGInfoSizePerDevice * vcmd->firstDevice());
-            // Fill all sync info fields
-            syncInfo->grid_id = vcmd->gridId();
-            syncInfo->num_grids = vcmd->numGrids();
-            syncInfo->prev_sum = vcmd->prevGridSum();
-            syncInfo->all_sum = vcmd->allGridSum();
-            // Update GPU address for grid sync info. Use the offset adjustment for the right location
-            gridSync = reinterpret_cast<uint64_t>(syncInfo);
+                            Device::kMGInfoSizePerDevice * vcmd->firstDevice());
           }
+          else {
+            syncInfo = reinterpret_cast<Device::MGSyncInfo*>(allocKernArg(Device::kSGInfoSize, 64));
+            syncInfo->mgs = nullptr;
+          }
+          // Update sync data address.
+          syncInfo->sgs = {0};
+          // Fill all sync info fields
+          syncInfo->grid_id = vcmd->gridId();
+          syncInfo->num_grids = vcmd->numGrids();
+          syncInfo->prev_sum = vcmd->prevGridSum();
+          syncInfo->all_sum = vcmd->allGridSum();
+          syncInfo->num_wg = vcmd->numWorkgroups();
+          // Update GPU address for grid sync info. Use the offset adjustment for the right
+          // location
+          gridSync = reinterpret_cast<uint64_t>(syncInfo);
           WriteAqlArgAt(hidden_arguments, gridSync, it.size_, it.offset_);
           break;
         }
@@ -3128,7 +3163,7 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
  */
  // ================================================================================================
 void VirtualGPU::submitKernel(amd::NDRangeKernelCommand& vcmd) {
-  if (vcmd.cooperativeGroups() || vcmd.cooperativeMultiDeviceGroups()) {
+  if (vcmd.cooperativeGroups()) {
     // Wait for the execution on the current queue, since the coop groups will use the device queue
     releaseGpuMemoryFence(kSkipCpuWait);
 
@@ -3148,15 +3183,8 @@ void VirtualGPU::submitKernel(amd::NDRangeKernelCommand& vcmd) {
     // Add a dependency into the device queue on the current queue
     queue->Barriers().AddExternalSignal(Barriers().GetLastSignal());
 
-    if (vcmd.cooperativeGroups()) {
-      // Initialize GWS if it's cooperative groups launch
-      uint32_t workgroups = 1;
-      for (uint i = 0; i < vcmd.sizes().dimensions(); i++) {
-        if (vcmd.sizes().local()[i] != 0) {
-          workgroups *= (vcmd.sizes().global()[i] / vcmd.sizes().local()[i]);
-        }
-      }
-
+    if (!Settings().coop_sync_) {
+      uint32_t workgroups = vcmd.numWorkgroups();
       static_cast<KernelBlitManager&>(queue->blitMgr()).RunGwsInit(workgroups - 1);
     }
 
@@ -3212,12 +3240,21 @@ void VirtualGPU::submitMarker(amd::Marker& vcmd) {
     } else {
       profilingBegin(vcmd);
       if (timestamp_ != nullptr) {
+        const Settings& settings = dev().settings();
         int32_t releaseFlags = vcmd.getEventScope();
         if (releaseFlags == Device::CacheState::kCacheStateAgent) {
-          dispatchBarrierPacket(kBarrierPacketAgentScopeHeader, false);
+          if (settings.barrier_value_packet_ && vcmd.profilingInfo().marker_ts_) {
+            dispatchBarrierValuePacket(kBarrierVendorPacketAgentScopeHeader, true);
+          } else {
+            dispatchBarrierPacket(kBarrierPacketAgentScopeHeader, false);
+          }
         } else {
           // Submit a barrier with a cache flushes.
-          dispatchBarrierPacket(kBarrierPacketHeader, false);
+          if (settings.barrier_value_packet_ && vcmd.profilingInfo().marker_ts_) {
+            dispatchBarrierValuePacket(kBarrierVendorPacketHeader, true);
+          } else {
+            dispatchBarrierPacket(kBarrierPacketHeader, false);
+          }
           hasPendingDispatch_ = false;
         }
       }
@@ -3338,11 +3375,7 @@ void VirtualGPU::submitTransferBufferFromFile(amd::TransferBufferFileCommand& cm
       size_t dstSize = amd::TransferBufferFileCommand::StagingBufferSize;
       dstSize = std::min(dstSize, copySize);
       void* dstBuffer = staging->cpuMap(*this);
-      if (!cmd.file()->transferBlock(writeBuffer, dstBuffer, staging->size(), fileOffset, 0,
-                                     dstSize)) {
-        cmd.setStatus(CL_INVALID_OPERATION);
-        return;
-      }
+
       staging->cpuUnmap(*this);
 
       bool result = blitMgr().copyBuffer(*staging, *mem, 0, dstOffset, dstSize, false);
@@ -3359,11 +3392,7 @@ void VirtualGPU::submitTransferBufferFromFile(amd::TransferBufferFileCommand& cm
       bool result = blitMgr().copyBuffer(*mem, *staging, srcOffset, 0, srcSize, false);
 
       void* srcBuffer = staging->cpuMap(*this);
-      if (!cmd.file()->transferBlock(writeBuffer, srcBuffer, staging->size(), fileOffset, 0,
-                                     srcSize)) {
-        cmd.setStatus(CL_INVALID_OPERATION);
-        return;
-      }
+
       staging->cpuUnmap(*this);
 
       fileOffset += srcSize;

@@ -796,7 +796,8 @@ bool Buffer::create(bool alloc_local) {
         }
       } else {
         assert(!isHostMemDirectAccess() && "Runtime doesn't support direct access to GPU memory!");
-        deviceMemory_ = dev().deviceLocalAlloc(size(), (memFlags & CL_MEM_SVM_ATOMICS) != 0);
+        deviceMemory_ = dev().deviceLocalAlloc(size(), (memFlags & CL_MEM_SVM_ATOMICS) != 0,
+                                               (memFlags & ROCCLR_MEM_HSA_PSEUDO_FINE_GRAIN) != 0);
       }
       owner()->setSvmPtr(deviceMemory_);
     } else {
@@ -804,6 +805,7 @@ bool Buffer::create(bool alloc_local) {
       if (owner()->getSvmPtr() == reinterpret_cast<void*>(amd::Memory::MemoryType
                                                           ::kArenaMemoryPtr)) {
         kind_ = MEMORY_KIND_ARENA;
+        flags_ |= HostMemoryDirectAccess;
       } else {
         kind_ = MEMORY_KIND_PTRGIVEN;
       }

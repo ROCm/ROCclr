@@ -428,6 +428,9 @@ NDRangeKernelCommand::NDRangeKernelCommand(HostQueue& queue, const EventWaitList
   auto devKernel = const_cast<device::Kernel*>(kernel.getDeviceKernel(device));
   profilingInfo_.setCallback(devKernel->getProfilingCallback(
     queue.vdev()), devKernel->getWavesPerSH(queue.vdev()));
+  if (cooperativeGroups()) {
+    setNumWorkgroups();
+  }
   if (forceProfiling) {
     profilingInfo_.enabled_ = true;
     profilingInfo_.clear();
@@ -748,11 +751,6 @@ void TransferBufferFileCommand::submit(device::VirtualDevice& device) {
     }
     // Make HD transfer to the host accessible memory
     bool writeBuffer(type() == CL_COMMAND_READ_SSG_FILE_AMD);
-    if (!file()->transferBlock(writeBuffer, srcDstBuffer, mem->size(), fileOffset(), origin()[0],
-                               size()[0])) {
-      setStatus(CL_INVALID_OPERATION);
-      return;
-    }
     if (memory_->getMemFlags() & CL_MEM_USE_PERSISTENT_MEM_AMD) {
       // Lock protected multiple maps for persistent memory
       amd::ScopedLock lock(mem->owner()->lockMemoryOps());

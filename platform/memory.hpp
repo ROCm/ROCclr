@@ -41,6 +41,7 @@
 #define ROCCLR_MEM_HSA_SIGNAL_MEMORY                (1u << 30)
 #define ROCCLR_MEM_INTERNAL_MEMORY                  (1u << 29)
 #define CL_MEM_VA_RANGE_AMD                         (1u << 28)
+#define ROCCLR_MEM_HSA_PSEUDO_FINE_GRAIN            (1u << 27)
 
 namespace device {
 class Memory;
@@ -662,7 +663,16 @@ class SvmBuffer : AllStatic {
   static Monitor AllocatedLock_;
 };
 
-//! Liquid flash extension
+#ifndef CL_COMMAND_WRITE_SSG_FILE_AMD
+#define CL_COMMAND_WRITE_SSG_FILE_AMD 2
+#endif
+#ifndef CL_COMMAND_READ_SSG_FILE_AMD
+#define CL_COMMAND_READ_SSG_FILE_AMD 1
+#endif
+#ifndef cl_file_flags_amd
+typedef uint32_t cl_file_flags_amd;
+#endif
+    //! Liquid flash extension
 class LiquidFlashFile : public RuntimeObject {
  private:
   std::wstring name_;

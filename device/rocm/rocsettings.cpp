@@ -100,12 +100,16 @@ Settings::Settings() {
 
   // Use coarse grain system memory for kernel arguments by default (to keep GPU cache)
   fgs_kernel_arg_ = false;
+  // by default for asics < gfx940 old single grid sync path is followed
+  coop_sync_ = false;
+  barrier_value_packet_ = false;
 }
 
 // ================================================================================================
 bool Settings::create(bool fullProfile, uint32_t gfxipMajor, uint32_t gfxipMinor,
                       uint32_t gfxStepping, bool enableXNACK, bool coop_groups) {
   customHostAllocator_ = false;
+  uint32_t gcnArch = gfxipMajor * 100 + gfxipMinor * 10 + gfxStepping;
 
   if (fullProfile) {
     pinnedXferSize_ = 0;
@@ -160,6 +164,11 @@ bool Settings::create(bool fullProfile, uint32_t gfxipMajor, uint32_t gfxipMinor
     enableExtension(ClAmdFp64);
   }
 
+  if (gcnArch == 910) {
+    // Barrier Value packet is only supported on MI200 for now
+    barrier_value_packet_ = true;
+  }
+
   if (gfxipMajor >= 10) {
      enableWave32Mode_ = true;
      enableWgpMode_ = GPU_ENABLE_WGP_MODE;
@@ -171,6 +180,10 @@ bool Settings::create(bool fullProfile, uint32_t gfxipMajor, uint32_t gfxipMinor
   }
   if (!flagIsDefault(GPU_ENABLE_WAVE32_MODE)) {
     enableWave32Mode_ = GPU_ENABLE_WAVE32_MODE;
+  }
+
+  if (gcnArch >= 940) {
+    coop_sync_ = true;
   }
 
   lcWavefrontSize64_ = !enableWave32Mode_;

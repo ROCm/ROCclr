@@ -613,6 +613,11 @@ struct Info : public amd::EmbeddedObject {
   size_t virtualMemAllocGranularity_; //!< virtual memory allocation size/addr granularity
 
   uint32_t driverNodeId_;
+  //! Number of Physical SGPRs per SIMD
+  uint32_t sgprsPerSimd_;
+  //! Number of VGPRs per SIMD
+  uint32_t vgprsPerSimd_;
+  uint32_t vgprAllocGranularity_;
 };
 
 //! Device settings
@@ -1294,7 +1299,8 @@ class MemObjMap : public AllStatic {
                         amd::Memory* v);  //!< add the host mem pointer and buffer in the container
   static void RemoveMemObj(const void* k);  //!< Remove an entry of mem object from the container
   static amd::Memory* FindMemObj(
-      const void* k);  //!< find the mem object based on the input pointer
+      const void* k,              //!< find the mem object based on the input pointer
+      size_t* offset = nullptr);  //!< Offset in the memory location
   static void UpdateAccess(amd::Device *peerDev);
   static void Purge(amd::Device* dev); //!< Purge all user allocated memories on the given device
 
@@ -1533,6 +1539,8 @@ class Device : public RuntimeObject {
     uint32_t num_grids;
     uint64_t prev_sum;
     uint64_t all_sum;
+    struct MGSyncData sgs;
+    uint num_wg;
   };
 
   //Attributes that could be retrived from hsa_amd_memory_pool_link_info_t.
@@ -1561,6 +1569,7 @@ class Device : public RuntimeObject {
   static constexpr size_t kP2PStagingSize = 4 * Mi;
   static constexpr size_t kMGSyncDataSize = sizeof(MGSyncData);
   static constexpr size_t kMGInfoSizePerDevice = kMGSyncDataSize + sizeof(MGSyncInfo);
+  static constexpr size_t kSGInfoSize = kMGSyncDataSize;
 
   typedef std::list<CommandQueue*> CommandQueues;
 
@@ -1902,6 +1911,12 @@ class Device : public RuntimeObject {
   //! Sets the stack size of the device
   bool UpdateStackSize(uint64_t stackSize);
 
+  //! Returns initial heap size
+  uint64_t InitialHeapSize() const { return initial_heap_size_; }
+
+  //! Sets the heap size of the device
+  bool UpdateInitialHeapSize(uint64_t initialHeapSize);
+
   //! Does this device allow P2P access?
   bool P2PAccessAllowed() const { return (p2p_access_devices_.size() > 0) ? true : false; }
 
@@ -1961,7 +1976,8 @@ class Device : public RuntimeObject {
 
   amd::Memory* arena_mem_obj_;      //!< Arena memory object
   uint64_t stack_size_{1024};       //!< Device stack size
-
+  device::Memory* initial_heap_buffer_;   //!< Initial heap buffer
+  uint64_t initial_heap_size_{HIP_INITIAL_DM_SIZE};  //!< Initial device heap size
  private:
   const Isa *isa_;                //!< Device isa
   bool IsTypeMatching(cl_device_type type, bool offlineDevices);

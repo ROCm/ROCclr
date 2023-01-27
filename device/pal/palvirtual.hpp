@@ -630,7 +630,9 @@ class VirtualGPU : public device::VirtualDevice {
                   const amd::Coord3D& dstOrigin,   //!< destination memory object
                   const amd::Coord3D& size,        //!< copy size
                   const amd::BufferRect& srcRect,  //!< region of source for copy
-                  const amd::BufferRect& dstRect   //!< region of destination for copy
+                  const amd::BufferRect& dstRect,   //!< region of destination for copy
+                  amd::CopyMetadata copyMetadata =
+                           amd::CopyMetadata()      //!< Memory copy MetaData
   );
 
   void PrintChildren(const HSAILKernel& hsaKernel,  //!< The parent HSAIL kernel
@@ -697,7 +699,7 @@ class VirtualGPU : public device::VirtualDevice {
 inline void VirtualGPU::logVmMemory(const std::string name, const Memory* memory) {
   if (PAL_EMBED_KERNEL_MD || (AMD_LOG_LEVEL >= amd::LOG_INFO)) {
     char buf[256];
-    sprintf(buf, "%s = ptr:[%p-%p] size:[%lu] heap[%d]", name.c_str(),
+    sprintf(buf, "%s = ptr:[%p-%p] size:[%llu] heap[%d]", name.c_str(),
             reinterpret_cast<void*>(memory->vmAddress()),
             reinterpret_cast<void*>(memory->vmAddress() + memory->size()),
             memory->iMem()->Desc().size, memory->iMem()->Desc().heaps[0]);

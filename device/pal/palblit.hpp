@@ -57,7 +57,9 @@ class DmaBlitManager : public device::HostBlitManager {
                           void* dstHost,               //!< Destination host memory
                           const amd::Coord3D& origin,  //!< Source origin
                           const amd::Coord3D& size,    //!< Size of the copy region
-                          bool entire = false          //!< Entire buffer will be updated
+                          bool entire = false,          //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()//!< Memory copy MetaData
                           ) const;
 
   //! Copies a buffer object to system memory
@@ -66,7 +68,9 @@ class DmaBlitManager : public device::HostBlitManager {
                               const amd::BufferRect& bufRect,   //!< Source rectangle
                               const amd::BufferRect& hostRect,  //!< Destination rectangle
                               const amd::Coord3D& size,         //!< Size of the copy region
-                              bool entire = false               //!< Entire buffer will be updated
+                              bool entire = false,              //!< Entire buffer will be updated
+                              amd::CopyMetadata copyMetadata =
+                                             amd::CopyMetadata()//!< Memory copy MetaData
                               ) const;
 
   //! Copies an image object to system memory
@@ -76,7 +80,9 @@ class DmaBlitManager : public device::HostBlitManager {
                          const amd::Coord3D& size,    //!< Size of the copy region
                          size_t rowPitch,             //!< Row pitch for host memory
                          size_t slicePitch,           //!< Slice pitch for host memory
-                         bool entire = false          //!< Entire buffer will be updated
+                         bool entire = false,         //!< Entire buffer will be updated
+                         amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()//!< Memory copy MetaData
                          ) const;
 
   //! Copies system memory to a buffer object
@@ -84,7 +90,9 @@ class DmaBlitManager : public device::HostBlitManager {
                            device::Memory& dstMemory,   //!< Destination memory object
                            const amd::Coord3D& origin,  //!< Destination origin
                            const amd::Coord3D& size,    //!< Size of the copy region
-                           bool entire = false          //!< Entire buffer will be updated
+                           bool entire = false,          //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                      amd::CopyMetadata()//!< Memory copy MetaData
                            ) const;
 
   //! Copies system memory to a buffer object
@@ -93,7 +101,9 @@ class DmaBlitManager : public device::HostBlitManager {
                                const amd::BufferRect& hostRect,  //!< Destination rectangle
                                const amd::BufferRect& bufRect,   //!< Source rectangle
                                const amd::Coord3D& size,         //!< Size of the copy region
-                               bool entire = false               //!< Entire buffer will be updated
+                               bool entire = false,              //!< Entire buffer will be updated
+                               amd::CopyMetadata copyMetadata =
+                                              amd::CopyMetadata()//!< Memory copy MetaData
                                ) const;
 
   //! Copies system memory to an image object
@@ -103,7 +113,9 @@ class DmaBlitManager : public device::HostBlitManager {
                           const amd::Coord3D& size,    //!< Size of the copy region
                           size_t rowPitch,             //!< Row pitch for host memory
                           size_t slicePitch,           //!< Slice pitch for host memory
-                          bool entire = false          //!< Entire buffer will be updated
+                          bool entire = false,         //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()//!< Memory copy MetaData
                           ) const;
 
   //! Copies a buffer object to another buffer object
@@ -112,7 +124,9 @@ class DmaBlitManager : public device::HostBlitManager {
                           const amd::Coord3D& srcOrigin,  //!< Source origin
                           const amd::Coord3D& dstOrigin,  //!< Destination origin
                           const amd::Coord3D& size,       //!< Size of the copy region
-                          bool entire = false             //!< Entire buffer will be updated
+                          bool entire = false,             //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                        amd::CopyMetadata()//!< Memory copy MetaData
                           ) const;
 
   //! Copies a buffer object to another buffer object
@@ -121,7 +135,9 @@ class DmaBlitManager : public device::HostBlitManager {
                               const amd::BufferRect& srcRect,  //!< Source rectangle
                               const amd::BufferRect& dstRect,  //!< Destination rectangle
                               const amd::Coord3D& size,        //!< Size of the copy region
-                              bool entire = false              //!< Entire buffer will be updated
+                              bool entire = false,             //!< Entire buffer will be updated
+                              amd::CopyMetadata copyMetadata =
+                                            amd::CopyMetadata()//!< Memory copy MetaData
                               ) const;
 
   //! Copies an image object to a buffer object
@@ -132,7 +148,9 @@ class DmaBlitManager : public device::HostBlitManager {
                                  const amd::Coord3D& size,       //!< Size of the copy region
                                  bool entire = false,            //!< Entire buffer will be updated
                                  size_t rowPitch = 0,            //!< Pitch for buffer
-                                 size_t slicePitch = 0           //!< Slice for buffer
+                                 size_t slicePitch = 0,          //!< Slice for buffer
+                                 amd::CopyMetadata copyMetadata =
+                                              amd::CopyMetadata()//!< Memory copy MetaData
                                  ) const;
 
   //! Copies a buffer object to an image object
@@ -143,7 +161,9 @@ class DmaBlitManager : public device::HostBlitManager {
                                  const amd::Coord3D& size,       //!< Size of the copy region
                                  bool entire = false,            //!< Entire buffer will be updated
                                  size_t rowPitch = 0,            //!< Pitch for buffer
-                                 size_t slicePitch = 0           //!< Slice for buffer
+                                 size_t slicePitch = 0,          //!< Slice for buffer
+                                 amd::CopyMetadata copyMetadata =
+                                              amd::CopyMetadata()//!< Memory copy MetaData
                                  ) const;
 
   //! Copies an image object to another image object
@@ -152,32 +172,38 @@ class DmaBlitManager : public device::HostBlitManager {
                          const amd::Coord3D& srcOrigin,  //!< Source origin
                          const amd::Coord3D& dstOrigin,  //!< Destination origin
                          const amd::Coord3D& size,       //!< Size of the copy region
-                         bool entire = false             //!< Entire buffer will be updated
+                         bool entire = false,            //!< Entire buffer will be updated
+                         amd::CopyMetadata copyMetadata =
+                                      amd::CopyMetadata()//!< Memory copy MetaData
                          ) const;
 
   //! Stream memory write operation - Write a 'value' at 'memory'.
-  virtual bool streamOpsWrite(device::Memory& memory, //!< Memory to write the 'value'
-                             uint64_t value,
-                             size_t offset,
-                             size_t sizeBytes
-  ) const {
+  virtual bool streamOpsWrite(device::Memory& memory,  //!< Memory to write the 'value'
+                              uint64_t value,
+                              size_t offset,
+                              size_t sizeBytes) const {
     assert(!"Unimplemented");
     return false;
-  };
+  }
 
   //! Stream memory ops- Waits for a 'value' at 'memory' and wait is released based on compare op.
-  virtual bool streamOpsWait(device::Memory& memory, //!< Memory contents to compare the 'value' against
+  virtual bool streamOpsWait(device::Memory& memory,  //!< Memory to compare the 'value' against
                              uint64_t value,
                              size_t offset,
                              size_t sizeBytes,
                              uint64_t flags,
-                             uint64_t mask
-  ) const {
+                             uint64_t mask) const {
     assert(!"Unimplemented");
     return false;
-  };
+  }
 
-
+  virtual bool initHeap(device::Memory* heap_to_initialize,
+                        device::Memory* initial_blocks,
+                        uint heap_size,
+                        uint number_of_initial_blocks) const {
+    assert(!"Unimplemented");
+    return false;
+  }
 
  protected:
   static constexpr uint MaxPinnedBuffers = 4;
@@ -249,6 +275,7 @@ class KernelBlitManager : public DmaBlitManager {
     GwsInit,
     StreamOpsWrite,
     StreamOpsWait,
+    InitHeap,
     BlitTotal,
   };
 
@@ -269,7 +296,9 @@ class KernelBlitManager : public DmaBlitManager {
                               const amd::BufferRect& srcRectIn,  //!< Source rectangle
                               const amd::BufferRect& dstRectIn,  //!< Destination rectangle
                               const amd::Coord3D& sizeIn,        //!< Size of the copy region
-                              bool entire = false                //!< Entire buffer will be updated
+                              bool entire = false,               //!< Entire buffer will be updated
+                              amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()          //!< Memory copy MetaData
                               ) const;
 
   //! Copies a buffer object to system memory
@@ -277,7 +306,9 @@ class KernelBlitManager : public DmaBlitManager {
                           void* dstHost,               //!< Destination host memory
                           const amd::Coord3D& origin,  //!< Source origin
                           const amd::Coord3D& size,    //!< Size of the copy region
-                          bool entire = false          //!< Entire buffer will be updated
+                          bool entire = false,         //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()//!< Memory copy MetaData
                           ) const;
 
   //! Copies a buffer object to system memory
@@ -286,7 +317,9 @@ class KernelBlitManager : public DmaBlitManager {
                               const amd::BufferRect& bufRect,   //!< Source rectangle
                               const amd::BufferRect& hostRect,  //!< Destination rectangle
                               const amd::Coord3D& size,         //!< Size of the copy region
-                              bool entire = false               //!< Entire buffer will be updated
+                              bool entire = false,              //!< Entire buffer will be updated
+                              amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()         //!< Memory copy MetaData
                               ) const;
 
   //! Copies system memory to a buffer object
@@ -294,7 +327,9 @@ class KernelBlitManager : public DmaBlitManager {
                            device::Memory& dstMemory,   //!< Destination memory object
                            const amd::Coord3D& origin,  //!< Destination origin
                            const amd::Coord3D& size,    //!< Size of the copy region
-                           bool entire = false          //!< Entire buffer will be updated
+                           bool entire = false,         //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata() //!< Memory copy MetaData
                            ) const;
 
   //! Copies system memory to a buffer object
@@ -303,7 +338,9 @@ class KernelBlitManager : public DmaBlitManager {
                                const amd::BufferRect& hostRect,  //!< Destination rectangle
                                const amd::BufferRect& bufRect,   //!< Source rectangle
                                const amd::Coord3D& size,         //!< Size of the copy region
-                               bool entire = false               //!< Entire buffer will be updated
+                               bool entire = false,              //!< Entire buffer will be updated
+                               amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()          //!< Memory copy MetaData
                                ) const;
 
   //! Copies a buffer object to an image object
@@ -312,7 +349,9 @@ class KernelBlitManager : public DmaBlitManager {
                           const amd::Coord3D& srcOrigin,  //!< Source origin
                           const amd::Coord3D& dstOrigin,  //!< Destination origin
                           const amd::Coord3D& size,       //!< Size of the copy region
-                          bool entire = false             //!< Entire buffer will be updated
+                          bool entire = false,             //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                    amd::CopyMetadata()    //!< Memory copy MetaData
                           ) const;
 
   //! Copies a buffer object to an image object
@@ -323,7 +362,9 @@ class KernelBlitManager : public DmaBlitManager {
                                  const amd::Coord3D& size,       //!< Size of the copy region
                                  bool entire = false,            //!< Entire buffer will be updated
                                  size_t rowPitch = 0,            //!< Pitch for buffer
-                                 size_t slicePitch = 0           //!< Slice for buffer
+                                 size_t slicePitch = 0,          //!< Slice for buffer
+                                 amd::CopyMetadata copyMetadata =
+                                              amd::CopyMetadata()//!< Memory copy MetaData
                                  ) const;
 
   //! Copies an image object to a buffer object
@@ -334,7 +375,9 @@ class KernelBlitManager : public DmaBlitManager {
                                  const amd::Coord3D& size,       //!< Size of the copy region
                                  bool entire = false,            //!< Entire buffer will be updated
                                  size_t rowPitch = 0,            //!< Pitch for buffer
-                                 size_t slicePitch = 0           //!< Slice for buffer
+                                 size_t slicePitch = 0,          //!< Slice for buffer
+                                 amd::CopyMetadata copyMetadata =
+                                              amd::CopyMetadata()//!< Memory copy MetaData
                                  ) const;
 
   //! Copies an image object to another image object
@@ -343,7 +386,9 @@ class KernelBlitManager : public DmaBlitManager {
                          const amd::Coord3D& srcOrigin,  //!< Source origin
                          const amd::Coord3D& dstOrigin,  //!< Destination origin
                          const amd::Coord3D& size,       //!< Size of the copy region
-                         bool entire = false             //!< Entire buffer will be updated
+                         bool entire = false,            //!< Entire buffer will be updated
+                         amd::CopyMetadata copyMetadata =
+                                      amd::CopyMetadata()//!< Memory copy MetaData
                          ) const;
 
   //! Copies an image object to system memory
@@ -353,7 +398,9 @@ class KernelBlitManager : public DmaBlitManager {
                          const amd::Coord3D& size,    //!< Size of the copy region
                          size_t rowPitch,             //!< Row pitch for host memory
                          size_t slicePitch,           //!< Slice pitch for host memory
-                         bool entire = false          //!< Entire buffer will be updated
+                         bool entire = false,         //!< Entire buffer will be updated
+                         amd::CopyMetadata copyMetadata =
+                                      amd::CopyMetadata()//!< Memory copy MetaData
                          ) const;
 
   //! Copies system memory to an image object
@@ -363,7 +410,9 @@ class KernelBlitManager : public DmaBlitManager {
                           const amd::Coord3D& size,    //!< Size of the copy region
                           size_t rowPitch,             //!< Row pitch for host memory
                           size_t slicePitch,           //!< Slice pitch for host memory
-                          bool entire = false          //!< Entire buffer will be updated
+                          bool entire = false,         //!< Entire buffer will be updated
+                          amd::CopyMetadata copyMetadata =
+                                      amd::CopyMetadata()//!< Memory copy MetaData
                           ) const;
 
   //! Fills a buffer memory with a pattern data
@@ -420,6 +469,11 @@ class KernelBlitManager : public DmaBlitManager {
                              uint64_t mask
   ) const;
 
+  virtual bool initHeap(device::Memory* heap_to_initialize,
+                        device::Memory* initial_blocks,
+                        uint heap_size,
+                        uint number_of_initial_blocks
+                        ) const;
 
  private:
   static constexpr size_t MaxXferBuffers = 2;
@@ -433,7 +487,9 @@ class KernelBlitManager : public DmaBlitManager {
                                const amd::Coord3D& size,       //!< Size of the copy region
                                bool entire = false,            //!< Entire buffer will be updated
                                size_t rowPitch = 0,            //!< Pitch for buffer
-                               size_t slicePitch = 0           //!< Slice for buffer
+                               size_t slicePitch = 0,          //!< Slice for buffer
+                               amd::CopyMetadata copyMetadata =
+                                            amd::CopyMetadata()//!< Memory copy MetaData
                                ) const;
 
   //! Copies an image object to a buffer object
@@ -444,7 +500,9 @@ class KernelBlitManager : public DmaBlitManager {
                                const amd::Coord3D& size,       //!< Size of the copy region
                                bool entire = false,            //!< Entire buffer will be updated
                                size_t rowPitch = 0,            //!< Pitch for buffer
-                               size_t slicePitch = 0           //!< Slice for buffer
+                               size_t slicePitch = 0,          //!< Slice for buffer
+                               amd::CopyMetadata copyMetadata =
+                                            amd::CopyMetadata()//!< Memory copy MetaData
                                ) const;
 
   //! Creates a program for all blit operations
@@ -482,7 +540,7 @@ static const char* BlitName[KernelBlitManager::BlitTotal] = {
     "__amd_rocclr_copyBufferAligned", "__amd_rocclr_fillBufferAligned",
     "__amd_rocclr_fillImage", "__amd_rocclr_scheduler",
     "__amd_rocclr_gwsInit", "__amd_rocclr_streamOpsWrite",
-    "__amd_rocclr_streamOpsWait"
+    "__amd_rocclr_streamOpsWait", "__amd_rocclr_initHeap"
 };
 
 /*@}*/  // namespace pal

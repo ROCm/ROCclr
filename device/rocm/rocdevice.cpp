@@ -695,7 +695,6 @@ bool Device::create() {
       info_.deviceTopology_.pcie.function);
   if (pro_device_ != nullptr) {
     pro_ena_ = true;
-    settings_->enableExtension(ClAMDLiquidFlash);
     pro_device_->GetAsicIdAndRevisionId(&info_.pcieDeviceId_, &info_.pcieRevisionId_);
   }
 #endif
@@ -1648,7 +1647,63 @@ bool Device::populateOCLDeviceConstants() {
 
   info_.globalCUMask_ = {};
   info_.virtualMemoryManagement_ = false;
+  switch (isa().versionMajor()) {
+    case (11):
+      if (isa().versionMinor() == 0) {
+        switch (isa().versionStepping()) {
+          case (0):
+          case (1):
+            info_.vgprAllocGranularity_ = 24;
+            info_.vgprsPerSimd_ = 1536;
+            break;
+          case (2):
+          case (3):
+          default:
+            info_.vgprAllocGranularity_ = 16;
+            info_.vgprsPerSimd_ = 1024;
+            break;
+        }
+      }
+      break;
+    case (10):
+      switch (isa().versionMinor()) {
+        case (0):
+        case (1):
+          info_.vgprAllocGranularity_ = 8;
+          info_.vgprsPerSimd_ = 1024;
+          break;
+        case (3):
+        default:
+          info_.vgprAllocGranularity_ = 16;
+          info_.vgprsPerSimd_ = 1024;
+          break;
+      }
+      break;
+    case (9):
+      if ((isa().versionMinor() == 0 && isa().versionStepping() == 10) ||
+          (isa().versionMinor() == 4 && isa().versionStepping() == 0)) {
+        info_.vgprAllocGranularity_ = 8;
+        info_.vgprsPerSimd_ = 512;
+      } else {
+        info_.vgprAllocGranularity_ = 4;
+        info_.vgprsPerSimd_ = 256;
+      }
+      break;
+    default:
+      // For gfx<=8
+      info_.vgprAllocGranularity_ = 4;
+      info_.vgprsPerSimd_ = 256;
+      break;
+  }
 
+  if (isa().versionMajor() < 8) {
+    info_.sgprsPerSimd_ = 512;
+  } else if (isa().versionMajor() < 10) {
+    info_.sgprsPerSimd_ = 800;
+  } else {
+    info_.sgprsPerSimd_ =
+        std::numeric_limits<uint32_t>::max();  // gfx10+ does not share SGPRs between waves
+  }
   return true;
 }
 
@@ -2058,7 +2113,7 @@ bool Device::deviceAllowAccess(void* ptr) const {
     hsa_status_t stat = hsa_amd_agents_allow_access(p2pAgents().size(),
                                                     p2pAgents().data(), nullptr, ptr);
     if (stat != HSA_STATUS_SUCCESS) {
-      LogError("Allow p2p access");
+      LogError("Allow p2p access failed - hsa_amd_agents_allow_access");
       return false;
     }
   }
@@ -2074,15 +2129,17 @@ bool Device::allowPeerAccess(device::Memory* memory) const {
     hsa_agent_t agent = getBackendDevice();
     hsa_status_t stat = hsa_amd_agents_allow_access(1, &agent, nullptr, ptr);
     if (stat != HSA_STATUS_SUCCESS) {
-      LogError("Allow p2p access failed");
+      LogError("Allow p2p access failed - hsa_amd_agents_allow_access");
       return false;
     }
   }
   return true;
 }
 
-void* Device::deviceLocalAlloc(size_t size, bool atomics) const {
-  const hsa_amd_memory_pool_t& pool = (atomics)? gpu_fine_grained_segment_ : gpuvm_segment_;
+void* Device::deviceLocalAlloc(size_t size, bool atomics, bool pseudo_fine_grain) const {
+  const hsa_amd_memory_pool_t& pool = (atomics) ? gpu_fine_grained_segment_ : gpuvm_segment_;
+  uint32_t hsa_mem_flags = (atomics && pseudo_fine_grain) ? HSA_AMD_MEMORY_POOL_PCIE_FLAG
+                                                          : HSA_AMD_MEMORY_POOL_STANDARD_FLAG;
 
   if (pool.handle == 0 || gpuvm_segment_max_alloc_ == 0) {
     DevLogPrintfError("Invalid argument, pool_handle: 0x%x , max_alloc: %u \n",
@@ -2091,7 +2148,7 @@ void* Device::deviceLocalAlloc(size_t size, bool atomics) const {
   }
 
   void* ptr = nullptr;
-  hsa_status_t stat = hsa_amd_memory_pool_allocate(pool, size, 0, &ptr);
+  hsa_status_t stat = hsa_amd_memory_pool_allocate(pool, size, hsa_mem_flags, &ptr);
   ClPrint(amd::LOG_DEBUG, amd::LOG_MEM, "Allocate hsa device memory %p, size 0x%zx", ptr, size);
   if (stat != HSA_STATUS_SUCCESS) {
     LogError("Fail allocation local memory");
@@ -2124,14 +2181,14 @@ void Device::updateFreeMemory(size_t size, bool free) {
       // This can happen if the free mem tracked is inaccurate, as some allocations can happen
       // directly via ROCr
       ClPrint(amd::LOG_ERROR, amd::LOG_ALWAYS,
-             "Free memory set to zero on device 0x%lx, requested size = 0x%x, freeMem_ = 0x%x",
+             "Free memory set to zero on device 0x%lx, requested size = 0x%zx, freeMem_ = 0x%zx",
              this, size, freeMem_.load());
       freeMem_ = 0;
       return;
     }
     freeMem_ -= size;
   }
-  ClPrint(amd::LOG_INFO, amd::LOG_MEM, "device=0x%lx, freeMem_ = 0x%x", this, freeMem_.load());
+  ClPrint(amd::LOG_INFO, amd::LOG_MEM, "device=0x%lx, freeMem_ = 0x%zx", this, freeMem_.load());
 }
 
 bool Device::IpcCreate(void* dev_ptr, size_t* mem_size, void* handle, size_t* mem_offset) const {
@@ -2274,6 +2331,7 @@ bool Device::IpcDetach (void* dev_ptr) const {
 // ================================================================================================
 void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_svm_mem_flags flags,
                        void* svmPtr) const {
+  constexpr bool kForceAllocation = true;
   amd::Memory* mem = nullptr;
 
   if (nullptr == svmPtr) {
@@ -2285,7 +2343,7 @@ void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_
       return nullptr;
     }
 
-    if (!mem->create(nullptr)) {
+    if (!mem->create(nullptr, false, false, kForceAllocation)) {
       LogError("failed to create a svm hidden buffer!");
       mem->release();
       return nullptr;
@@ -3207,19 +3265,22 @@ bool Device::IsValidAllocation(const void* dev_ptr, size_t size) const {
 
 // ================================================================================================
 void Device::HiddenHeapAlloc() {
-  auto HeapAllocZeroOut = [this]()->bool {
+  auto HeapAllocZeroOut = [this]() -> bool {
     // Allocate initial heap for device memory allocator
     static constexpr size_t HeapBufferSize = 128 * Ki;
     heap_buffer_ = createMemory(HeapBufferSize);
-    // Clear memory to 0 for device library logic
-    if ((heap_buffer_ == nullptr) ||
-        (HSA_STATUS_SUCCESS != hsa_amd_memory_fill(
-      reinterpret_cast<void*>(HeapBuffer()->virtualAddress()), 0,
-      HeapBufferSize / sizeof(uint32_t)))) {
+    if (initial_heap_size_ != 0) {
+      initial_heap_size_ = amd::alignUp(initial_heap_size_, 2 * Mi);
+      initial_heap_buffer_ = createMemory(initial_heap_size_);
+    }
+    if (heap_buffer_ == nullptr) {
       LogError("Heap buffer allocation failed!");
       return false;
     }
-    return true;
+    bool result = static_cast<const KernelBlitManager&>(xferMgr()).initHeap(
+        heap_buffer_, initial_heap_buffer_, HeapBufferSize, initial_heap_size_ / (2 * Mi));
+
+    return result;
   };
   std::call_once(heap_initialized_, HeapAllocZeroOut);
 }

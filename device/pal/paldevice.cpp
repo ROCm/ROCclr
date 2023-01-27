@@ -613,8 +613,14 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
     info_.numRTQueues_ = numExclusiveComputeRings;
 
     const auto& engineProp = palProp.engineProperties[Pal::EngineTypeCompute];
-    info_.numRTCUs_ = engineProp.maxNumDedicatedCu;
-    info_.granularityRTCUs_ = engineProp.dedicatedCuGranularity;
+
+    if (settings().enableWgpMode_) {
+      info_.numRTCUs_ = engineProp.maxNumDedicatedCu / 2;
+      info_.granularityRTCUs_ = engineProp.dedicatedCuGranularity / 2;
+    } else {
+      info_.numRTCUs_ = engineProp.maxNumDedicatedCu;
+      info_.granularityRTCUs_ = engineProp.dedicatedCuGranularity;
+    }
 
     info_.threadTraceEnable_ = settings().threadTraceEnable_;
 
@@ -632,7 +638,11 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
     }
   }
   info_.virtualMemoryManagement_ = true;
-  info_.virtualMemAllocGranularity_ = static_cast<size_t>(palProp.gpuMemoryProperties.virtualMemAllocGranularity);
+  info_.virtualMemAllocGranularity_ =
+      static_cast<size_t>(palProp.gpuMemoryProperties.virtualMemAllocGranularity);
+  info_.vgprAllocGranularity_ = palProp.gfxipProperties.shaderCore.vgprAllocGranularity;
+  info_.vgprsPerSimd_ = palProp.gfxipProperties.shaderCore.vgprsPerSimd;
+  info_.sgprsPerSimd_ = palProp.gfxipProperties.shaderCore.sgprsPerSimd;
 }
 
 Device::XferBuffers::~XferBuffers() {
@@ -1508,6 +1518,11 @@ pal::Memory* Device::createBuffer(amd::Memory& owner, bool directAccess) const {
           // so assume Host write into it
           type = Resource::RemoteUSWC;
           remoteAlloc = true;
+        } else {
+#ifndef ATI_BITS_32
+          type = Resource::Remote;
+          remoteAlloc = true;
+#endif
         }
       }
       // Make sure owner has a valid hostmem pointer and it's not COPY
@@ -2217,6 +2232,7 @@ bool Device::deviceAllowAccess(void* ptr) const {
 
 void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_svm_mem_flags flags,
                        void* svmPtr) const {
+  constexpr bool kForceAllocation = true;
   alignment = std::max(alignment, static_cast<size_t>(info_.memBaseAddrAlign_));
 
   amd::Memory* mem = nullptr;
@@ -2234,7 +2250,7 @@ void* Device::svmAlloc(amd::Context& context, size_t size, size_t alignment, cl_
       return nullptr;
     }
 
-    if (!mem->create(nullptr, false)) {
+    if (!mem->create(nullptr, false, false, kForceAllocation)) {
       LogError("failed to create a svm hidden buffer!");
       mem->release();
       return nullptr;
@@ -2341,15 +2357,22 @@ void Device::ReleaseExclusiveGpuAccess(VirtualGPU& vgpu) const {
 
 // ================================================================================================
 void Device::HiddenHeapAlloc() {
-  auto HeapAlloc = [this]()->bool {
+  auto HeapAlloc = [this]() -> bool {
     // Allocate initial heap for device memory allocator
     static constexpr size_t HeapBufferSize = 128 * Ki;
     heap_buffer_ = createMemory(HeapBufferSize);
+    if (initial_heap_size_ != 0) {
+      initial_heap_size_ = amd::alignUp(initial_heap_size_, 2 * Mi);
+      initial_heap_buffer_ = createMemory(initial_heap_size_);
+    }
     if (heap_buffer_ == nullptr) {
       LogError("Heap buffer allocation failed!");
       return false;
     }
-    return true;
+    bool result = static_cast<const KernelBlitManager&>(xferMgr()).initHeap(
+        heap_buffer_, initial_heap_buffer_, HeapBufferSize, initial_heap_size_ / (2 * Mi));
+
+    return result;
   };
   std::call_once(heap_initialized_, HeapAlloc);
 }
