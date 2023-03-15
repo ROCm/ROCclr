@@ -89,7 +89,6 @@ class SvmFillMemoryCommand;
 class SvmMapMemoryCommand;
 class SvmUnmapMemoryCommand;
 class SvmPrefetchAsyncCommand;
-class TransferBufferFileCommand;
 class StreamOperationCommand;
 class VirtualMapCommand;
 class ExternalSemaphoreCmd;
@@ -154,7 +153,6 @@ enum OclExtensions {
   ClKhrD3d9Sharing,
 #endif
   ClKhrImage2dFromBuffer,
-  ClAmdSemaphore,
   ClAMDBusAddressableMemory,
   ClAMDC11Atomics,
   ClKhrSpir,
@@ -163,8 +161,6 @@ enum OclExtensions {
   ClKhrDepthImages,
   ClKhrMipMapImage,
   ClKhrMipMapImageWrites,
-  ClKhrIlProgram,
-  ClAMDLiquidFlash,
   ClAmdCopyBufferP2P,
   ClAmdAssemblyProgram,
 #if defined(_WIN32)
@@ -200,7 +196,6 @@ static constexpr const char* OclExtensionsString[] = {"cl_khr_fp64 ",
                                             "cl_khr_dx9_media_sharing ",
 #endif
                                             "cl_khr_image2d_from_buffer ",
-                                            "",
                                             "cl_amd_bus_addressable_memory ",
                                             "cl_amd_c11_atomics ",
                                             "cl_khr_spir ",
@@ -209,8 +204,6 @@ static constexpr const char* OclExtensionsString[] = {"cl_khr_fp64 ",
                                             "cl_khr_depth_images ",
                                             "cl_khr_mipmap_image ",
                                             "cl_khr_mipmap_image_writes ",
-                                            "",
-                                            "cl_amd_liquid_flash ",
                                             "cl_amd_copy_buffer_p2p ",
                                             "cl_amd_assembly_program ",
 #if defined(_WIN32)
@@ -1241,9 +1234,6 @@ class VirtualDevice : public amd::HeapObject {
   /// Optional extensions
   virtual void submitSignal(amd::SignalCommand& cmd) = 0;
   virtual void submitMakeBuffersResident(amd::MakeBuffersResidentCommand& cmd) = 0;
-  virtual void submitTransferBufferFromFile(amd::TransferBufferFileCommand& cmd) {
-    ShouldNotReachHere();
-  }
   virtual void submitSvmPrefetchAsync(amd::SvmPrefetchAsyncCommand& cmd) {
     ShouldNotReachHere();
   }
@@ -1269,6 +1259,9 @@ class VirtualDevice : public amd::HeapObject {
 
   //! Returns fence state of the VirtualGPU
   virtual bool isFenceDirty() const = 0;
+
+  //! Resets fence state of the VirtualGPU
+  virtual void resetFenceDirty() = 0;
 
  private:
   //! Disable default copy constructor
@@ -1796,9 +1789,14 @@ class Device : public RuntimeObject {
 
   // Returns the status of HW event, associated with amd::Event
   virtual bool IsHwEventReady(
-      const amd::Event& event,  //!< AMD event for HW status validation
-      bool wait = false         //!< If true then forces the event completion
-      ) const {
+      const amd::Event& event,    //!< AMD event for HW status validation
+      bool wait = false) const {  //!< If true then forces the event completion
+    return false;
+  };
+
+  // Returns the status of HW event, associated with amd::Event
+  virtual bool IsHwEventReadyForcedWait(
+      const amd::Event& event) const {  //!< AMD event for HW status validation
     return false;
   };
 

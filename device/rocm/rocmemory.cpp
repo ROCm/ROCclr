@@ -37,9 +37,6 @@
 #include "platform/sampler.hpp"
 #include "amdocl/cl_gl_amd.hpp"
 #include "amdocl/cl_vk_amd.hpp"
-#ifdef WITH_AMDGPU_PRO
-#include "pro/prodriver.hpp"
-#endif
 
 namespace roc {
 
@@ -646,8 +643,9 @@ void Buffer::destroy() {
         if (memFlags & CL_MEM_ALLOC_HOST_PTR) {
           if (dev().info().hmmSupported_) {
             // AMD HMM path. Destroy system memory
-            amd::Os::uncommitMemory(deviceMemory_, size());
-            amd::Os::releaseMemory(deviceMemory_, size());
+            if (!(amd::Os::releaseMemory(deviceMemory_, size()))) {
+              ClPrint(amd::LOG_DEBUG, amd::LOG_MEM, "[ROCClr] munmap failed \n");
+            }
           } else {
             dev().hostFree(deviceMemory_, size());
           }
@@ -673,12 +671,6 @@ void Buffer::destroy() {
     return;
   }
 
-#ifdef WITH_AMDGPU_PRO
-  if ((memFlags & CL_MEM_USE_PERSISTENT_MEM_AMD) && dev().ProEna()) {
-    dev().iPro().FreeDmaBuffer(deviceMemory_);
-    return;
-  }
-#endif
   if (deviceMemory_ != nullptr) {
     if (deviceMemory_ != owner()->getHostMem()) {
       // if they are identical, the host pointer will be
@@ -755,7 +747,6 @@ bool Buffer::create(bool alloc_local) {
             if (deviceMemory_ == NULL) {
               return false;
             }
-            amd::Os::commitMemory(deviceMemory_, size(), amd::Os::MEM_PROT_RW);
             // Currently HMM requires cirtain initial calls to mark sysmem allocation as
             // GPU accessible or prefetch memory into GPU
             if (!dev().SvmAllocInit(deviceMemory_, size())) {
@@ -797,7 +788,7 @@ bool Buffer::create(bool alloc_local) {
       } else {
         assert(!isHostMemDirectAccess() && "Runtime doesn't support direct access to GPU memory!");
         deviceMemory_ = dev().deviceLocalAlloc(size(), (memFlags & CL_MEM_SVM_ATOMICS) != 0,
-                                               (memFlags & ROCCLR_MEM_HSA_PSEUDO_FINE_GRAIN) != 0);
+                                               (memFlags & ROCCLR_MEM_HSA_UNCACHED) != 0);
       }
       owner()->setSvmPtr(deviceMemory_);
     } else {

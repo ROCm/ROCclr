@@ -75,7 +75,6 @@ class Memory;
 class Resource;
 class VirtualDevice;
 class PrintfDbg;
-class IProDevice;
 
 class ProfilingSignal : public amd::ReferenceCountedObject {
 public:
@@ -258,6 +257,7 @@ class NullDevice : public amd::Device {
       cl_set_device_clock_mode_output_amd* pSetClockModeOutput) { return true; }
 
   virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const { return false; }
+  virtual bool IsHwEventReadyForcedWait(const amd::Event& event) const { return false; }
   virtual void getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* end) const {};
   virtual void ReleaseGlobalSignal(void* signal) const {}
 
@@ -443,6 +443,7 @@ class Device : public NullDevice {
                             cl_set_device_clock_mode_output_amd* pSetClockModeOutput);
 
   virtual bool IsHwEventReady(const amd::Event& event, bool wait = false) const;
+  virtual bool IsHwEventReadyForcedWait(const amd::Event& event) const;
   virtual void getHwEventTime(const amd::Event& event, uint64_t* start, uint64_t* end) const;
   virtual void ReleaseGlobalSignal(void* signal) const;
 
@@ -477,10 +478,6 @@ class Device : public NullDevice {
 
   //! Create internal blit program
   bool createBlitProgram();
-
-  // Returns AMD GPU Pro interfacs
-  const IProDevice& iPro() const { return *pro_device_; }
-  bool ProEna() const  { return pro_ena_; }
 
   // P2P agents avaialble for this device
   const std::vector<hsa_agent_t>& p2pAgents() const { return p2p_agents_; }
@@ -549,10 +546,10 @@ class Device : public NullDevice {
   const bool isFineGrainSupported() const;
 
   //! Returns True if memory pointer is known to ROCr (excludes HMM allocations)
-  bool IsValidAllocation(const void* dev_ptr, size_t size) const;
+  bool IsValidAllocation(const void* dev_ptr, size_t size, hsa_amd_pointer_info_t* ptr_info);
 
   //! Allocates hidden heap for device memory allocations
-  void HiddenHeapAlloc();
+  void HiddenHeapAlloc(const VirtualGPU& gpu);
 
  private:
   bool create();
@@ -598,8 +595,6 @@ class Device : public NullDevice {
 
   XferBuffers* xferRead_;   //!< Transfer buffers read
   XferBuffers* xferWrite_;  //!< Transfer buffers write
-  const IProDevice* pro_device_;  //!< AMDGPUPro device
-  bool  pro_ena_;           //!< Extra functionality with AMDGPUPro device, beyond ROCr
   std::atomic<size_t> freeMem_;   //!< Total of free memory available
   mutable amd::Monitor vgpusAccess_;     //!< Lock to serialise virtual gpu list access
   bool hsa_exclusive_gpu_access_;  //!< TRUE if current device was moved into exclusive GPU access mode

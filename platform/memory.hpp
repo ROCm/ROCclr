@@ -41,7 +41,7 @@
 #define ROCCLR_MEM_HSA_SIGNAL_MEMORY                (1u << 30)
 #define ROCCLR_MEM_INTERNAL_MEMORY                  (1u << 29)
 #define CL_MEM_VA_RANGE_AMD                         (1u << 28)
-#define ROCCLR_MEM_HSA_PSEUDO_FINE_GRAIN            (1u << 27)
+#define ROCCLR_MEM_HSA_UNCACHED                     (1u << 27)
 
 namespace device {
 class Memory;
@@ -661,42 +661,6 @@ class SvmBuffer : AllStatic {
 
   static std::map<uintptr_t, uintptr_t> Allocated_;  // !< Allocated buffers
   static Monitor AllocatedLock_;
-};
-
-#ifndef CL_COMMAND_WRITE_SSG_FILE_AMD
-#define CL_COMMAND_WRITE_SSG_FILE_AMD 2
-#endif
-#ifndef CL_COMMAND_READ_SSG_FILE_AMD
-#define CL_COMMAND_READ_SSG_FILE_AMD 1
-#endif
-#ifndef cl_file_flags_amd
-typedef uint32_t cl_file_flags_amd;
-#endif
-    //! Liquid flash extension
-class LiquidFlashFile : public RuntimeObject {
- private:
-  std::wstring name_;
-  cl_file_flags_amd flags_;
-  void* handle_;
-  uint32_t blockSize_;
-  uint64_t fileSize_;
-
- public:
-  LiquidFlashFile(const wchar_t* name, cl_file_flags_amd flags)
-      : name_(name), flags_(flags), handle_(NULL), blockSize_(0), fileSize_(0) {}
-
-  ~LiquidFlashFile();
-
-  bool open();
-  void close();
-
-  uint32_t blockSize() const { return blockSize_; };
-  uint64_t fileSize() const { return fileSize_; };
-
-  bool transferBlock(bool read, void* dst, uint64_t bufferSize, uint64_t fileOffset,
-                     uint64_t bufferOffset, uint64_t size) const;
-
-  virtual ObjectType objectType() const { return ObjectTypeLiquidFlashFile; }
 };
 
 class ArenaMemory: public Buffer {

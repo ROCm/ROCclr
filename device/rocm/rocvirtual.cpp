@@ -78,13 +78,8 @@ static constexpr uint16_t kBarrierPacketHeader =
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
-static constexpr uint16_t kBarrierPacketAgentScopeHeader =
-    (HSA_PACKET_TYPE_BARRIER_AND << HSA_PACKET_HEADER_TYPE) | (1 << HSA_PACKET_HEADER_BARRIER) |
-    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
-    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
-
 static constexpr uint16_t kNopPacketHeader =
-    (HSA_PACKET_TYPE_BARRIER_AND << HSA_PACKET_HEADER_TYPE) |
+    (HSA_PACKET_TYPE_BARRIER_AND << HSA_PACKET_HEADER_TYPE) | (1 << HSA_PACKET_HEADER_BARRIER) |
     (HSA_FENCE_SCOPE_NONE << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
     (HSA_FENCE_SCOPE_NONE << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
@@ -99,14 +94,16 @@ static constexpr uint16_t kBarrierPacketReleaseHeader =
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
 static constexpr uint16_t kBarrierVendorPacketHeader =
-    (HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE) | (1 << HSA_PACKET_HEADER_BARRIER) |
+    (HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE) |
+    (1 << HSA_PACKET_HEADER_BARRIER) |
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
     (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
-static constexpr uint16_t kBarrierVendorPacketAgentScopeHeader =
-    (HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE) | (1 << HSA_PACKET_HEADER_BARRIER) |
-    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
-    (HSA_FENCE_SCOPE_AGENT << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
+static constexpr uint16_t kBarrierVendorPacketNopScopeHeader =
+    (HSA_PACKET_TYPE_VENDOR_SPECIFIC << HSA_PACKET_HEADER_TYPE) |
+    (1 << HSA_PACKET_HEADER_BARRIER) |
+    (HSA_FENCE_SCOPE_NONE << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
+    (HSA_FENCE_SCOPE_NONE << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
 
 static constexpr hsa_barrier_and_packet_t kBarrierAcquirePacket = {
     kBarrierPacketAcquireHeader, 0, 0, {{0}}, 0, {0}};
@@ -433,8 +430,7 @@ hsa_signal_t VirtualGPU::HwQueueTracker::ActiveSignal(
     prof_signal->ts_ = ts;
     ts->AddProfilingSignal(prof_signal);
     if (AMD_DIRECT_DISPATCH) {
-      bool enqueHandler= false;
-      uint32_t init_value = kInitSignalValueOne;
+      bool enqueHandler = false;
       enqueHandler = (ts->command().Callback() != nullptr ||
                       ts->command().GetBatchHead() != nullptr )  &&
                       !ts->command().CpuWaitRequested();
@@ -990,6 +986,7 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
   uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, 1);
   uint64_t read = hsa_queue_load_read_index_relaxed(gpu_queue_);
 
+  fence_dirty_ = true;
   auto cache_state = extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
                          HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
   if (!skipSignal) {
@@ -1002,7 +999,9 @@ void VirtualGPU::dispatchBarrierPacket(uint16_t packetHeader, bool skipSignal,
   }
 
   // Reset fence_dirty_ flag if we submit a barrier
-  fence_dirty_ = false;
+  if (cache_state == amd::Device::kCacheStateSystem) {
+    fence_dirty_ = false;
+  }
 
   while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= queueMask);
   hsa_barrier_and_packet_t* aql_loc =
@@ -1064,6 +1063,10 @@ void VirtualGPU::dispatchBarrierValuePacket(uint16_t packetHeader, bool resolveD
     }
   }
 
+  fence_dirty_ = true;
+  auto cache_state = extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
+                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
+
   if (completionSignal.handle == 0) {
     // Get active signal for current dispatch if profiling is necessary
     barrier_value_packet_.completion_signal =
@@ -1073,15 +1076,17 @@ void VirtualGPU::dispatchBarrierValuePacket(uint16_t packetHeader, bool resolveD
     barrier_value_packet_.completion_signal = completionSignal;
   }
 
+  // Reset fence_dirty_ flag if we submit a barrier
+  if (cache_state == amd::Device::kCacheStateSystem) {
+    fence_dirty_ = false;
+  }
+
   uint64_t index = hsa_queue_add_write_index_screlease(gpu_queue_, 1);
   while ((index - hsa_queue_load_read_index_scacquire(gpu_queue_)) >= queueMask);
   hsa_amd_barrier_value_packet_t* aql_loc = &(reinterpret_cast<hsa_amd_barrier_value_packet_t*>(
       gpu_queue_->base_address))[index & queueMask];
   *aql_loc = barrier_value_packet_;
   packet_store_release(reinterpret_cast<uint32_t*>(aql_loc), packetHeader, rest);
-
-  auto cache_state = extractAqlBits(packetHeader, HSA_PACKET_HEADER_SCRELEASE_FENCE_SCOPE,
-                         HSA_PACKET_HEADER_WIDTH_SCRELEASE_FENCE_SCOPE);
 
   hsa_signal_store_screlease(gpu_queue_->doorbell_signal, index);
 
@@ -1817,7 +1822,7 @@ bool VirtualGPU::copyMemory(cl_command_type type, amd::Memory& srcMem, amd::Memo
         realSize.c[0] *= elemSize;
       }
 
-      result = blitMgr().copyBuffer(*srcDevMem, *dstDevMem, realSrcOrigin, realDstOrigin, 
+      result = blitMgr().copyBuffer(*srcDevMem, *dstDevMem, realSrcOrigin, realDstOrigin,
                                     realSize, entire, copyMetadata);
       break;
     }
@@ -2781,7 +2786,8 @@ bool VirtualGPU::createVirtualQueue(uint deviceQueueSize)
 // ================================================================================================
 bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
     const amd::Kernel& kernel, const_address parameters, void* eventHandle,
-    uint32_t sharedMemBytes, amd::NDRangeKernelCommand* vcmd) {
+    uint32_t sharedMemBytes, amd::NDRangeKernelCommand* vcmd,
+    hsa_kernel_dispatch_packet_t* aql_packet) {
   device::Kernel* devKernel = const_cast<device::Kernel*>(kernel.getDeviceKernel(dev()));
   Kernel& gpuKernel = static_cast<Kernel&>(*devKernel);
   size_t ldsUsage = gpuKernel.WorkgroupGroupSegmentByteSize();
@@ -2957,7 +2963,7 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
         case amd::KernelParameterDescriptor::HiddenHeap:
           // Allocate hidden heap for HIP applications only
           if ((amd::IS_HIP) && (dev().HeapBuffer() == nullptr)) {
-            const_cast<Device&>(dev()).HiddenHeapAlloc();
+            const_cast<Device&>(dev()).HiddenHeapAlloc(*this);
           }
           if (dev().HeapBuffer() != nullptr) {
             // Add heap pointer to the code
@@ -3108,6 +3114,16 @@ bool VirtualGPU::submitKernelInternal(const amd::NDRangeContainer& sizes,
       dispatchPacket.reserved2 = vcmd->profilingInfo().correlation_id_;
     }
 
+    // Copy scheduler's AQL packet for possible relaunch from the scheduler itself
+    if (aql_packet != nullptr) {
+      *aql_packet = dispatchPacket;
+      aql_packet->header = (HSA_PACKET_TYPE_KERNEL_DISPATCH << HSA_PACKET_HEADER_TYPE) |
+                           (1 << HSA_PACKET_HEADER_BARRIER) |
+                           (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_ACQUIRE_FENCE_SCOPE) |
+                           (HSA_FENCE_SCOPE_SYSTEM << HSA_PACKET_HEADER_RELEASE_FENCE_SCOPE);
+      aql_packet->setup = sizes.dimensions() << HSA_KERNEL_DISPATCH_PACKET_SETUP_DIMENSIONS;
+    }
+
     // Dispatch the packet
     if (!dispatchAqlPacket(
             &dispatchPacket, aqlHeaderWithOrder,
@@ -3242,11 +3258,11 @@ void VirtualGPU::submitMarker(amd::Marker& vcmd) {
       if (timestamp_ != nullptr) {
         const Settings& settings = dev().settings();
         int32_t releaseFlags = vcmd.getEventScope();
-        if (releaseFlags == Device::CacheState::kCacheStateAgent) {
+        if (releaseFlags == Device::CacheState::kCacheStateIgnore) {
           if (settings.barrier_value_packet_ && vcmd.profilingInfo().marker_ts_) {
-            dispatchBarrierValuePacket(kBarrierVendorPacketAgentScopeHeader, true);
+            dispatchBarrierValuePacket(kBarrierVendorPacketNopScopeHeader, true);
           } else {
-            dispatchBarrierPacket(kBarrierPacketAgentScopeHeader, false);
+            dispatchBarrierPacket(kNopPacketHeader, false);
           }
         } else {
           // Submit a barrier with a cache flushes.
@@ -3353,55 +3369,10 @@ amd::Memory* VirtualGPU::findPinnedMem(void* addr, size_t size) {
   return nullptr;
 }
 
+// ================================================================================================
 void VirtualGPU::enableSyncBlit() const { blitMgr_->enableSynchronization(); }
 
-void VirtualGPU::submitTransferBufferFromFile(amd::TransferBufferFileCommand& cmd) {
-  // Make sure VirtualGPU has an exclusive access to the resources
-  amd::ScopedLock lock(execution());
-
-  size_t copySize = cmd.size()[0];
-  size_t fileOffset = cmd.fileOffset();
-  Memory* mem = dev().getRocMemory(&cmd.memory());
-  uint idx = 0;
-
-  assert((cmd.type() == CL_COMMAND_READ_SSG_FILE_AMD) ||
-         (cmd.type() == CL_COMMAND_WRITE_SSG_FILE_AMD));
-  const bool writeBuffer(cmd.type() == CL_COMMAND_READ_SSG_FILE_AMD);
-
-  if (writeBuffer) {
-    size_t dstOffset = cmd.origin()[0];
-    while (copySize > 0) {
-      Memory* staging = dev().getRocMemory(&cmd.staging(idx));
-      size_t dstSize = amd::TransferBufferFileCommand::StagingBufferSize;
-      dstSize = std::min(dstSize, copySize);
-      void* dstBuffer = staging->cpuMap(*this);
-
-      staging->cpuUnmap(*this);
-
-      bool result = blitMgr().copyBuffer(*staging, *mem, 0, dstOffset, dstSize, false);
-      fileOffset += dstSize;
-      dstOffset += dstSize;
-      copySize -= dstSize;
-    }
-  } else {
-    size_t srcOffset = cmd.origin()[0];
-    while (copySize > 0) {
-      Memory* staging = dev().getRocMemory(&cmd.staging(idx));
-      size_t srcSize = amd::TransferBufferFileCommand::StagingBufferSize;
-      srcSize = std::min(srcSize, copySize);
-      bool result = blitMgr().copyBuffer(*mem, *staging, srcOffset, 0, srcSize, false);
-
-      void* srcBuffer = staging->cpuMap(*this);
-
-      staging->cpuUnmap(*this);
-
-      fileOffset += srcSize;
-      srcOffset += srcSize;
-      copySize -= srcSize;
-    }
-  }
-}
-
+// ================================================================================================
 void VirtualGPU::submitPerfCounter(amd::PerfCounterCommand& vcmd) {
   // Make sure VirtualGPU has an exclusive access to the resources
   amd::ScopedLock lock(execution());

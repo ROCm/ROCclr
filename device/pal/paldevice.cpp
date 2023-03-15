@@ -108,6 +108,7 @@ static constexpr PalDevice supportedPalDevices[] = {
   {11, 0,  1,  Pal::GfxIpLevel::GfxIp11_0, "gfx1101",       Pal::AsicRevision::Navi32},
   {11, 0,  2,  Pal::GfxIpLevel::GfxIp11_0, "gfx1102",       Pal::AsicRevision::Navi33},
   {11, 0,  3,  Pal::GfxIpLevel::GfxIp11_0, "gfx1103",       Pal::AsicRevision::Phoenix1},
+  {11, 0,  3,  Pal::GfxIpLevel::GfxIp11_0, "gfx1103",       Pal::AsicRevision::Phoenix2},
 };
 
 static std::tuple<const amd::Isa*, const char*> findIsa(Pal::AsicRevision asicRevision,
@@ -632,7 +633,9 @@ void NullDevice::fillDeviceInfo(const Pal::DeviceProperties& palProp,
     info_.cooperativeGroups_ = settings().enableCoopGroups_;
     info_.cooperativeMultiDeviceGroups_ = settings().enableCoopMultiDeviceGroups_;
 
-    if (heaps[Pal::GpuHeapInvisible].logicalSize == 0) {
+    if (amd::IS_HIP) {
+      info_.largeBar_ = false;
+    } else if (heaps[Pal::GpuHeapInvisible].logicalSize == 0) {
       info_.largeBar_ = true;
       ClPrint(amd::LOG_INFO, amd::LOG_INIT, "Resizable bar enabled");
     }
@@ -2356,8 +2359,8 @@ void Device::ReleaseExclusiveGpuAccess(VirtualGPU& vgpu) const {
 }
 
 // ================================================================================================
-void Device::HiddenHeapAlloc() {
-  auto HeapAlloc = [this]() -> bool {
+void Device::HiddenHeapAlloc(const VirtualGPU& gpu) {
+  auto HeapAlloc = [this, &gpu]() -> bool {
     // Allocate initial heap for device memory allocator
     static constexpr size_t HeapBufferSize = 128 * Ki;
     heap_buffer_ = createMemory(HeapBufferSize);
@@ -2369,7 +2372,7 @@ void Device::HiddenHeapAlloc() {
       LogError("Heap buffer allocation failed!");
       return false;
     }
-    bool result = static_cast<const KernelBlitManager&>(xferMgr()).initHeap(
+    bool result = static_cast<const KernelBlitManager&>(gpu.blitMgr()).initHeap(
         heap_buffer_, initial_heap_buffer_, HeapBufferSize, initial_heap_size_ / (2 * Mi));
 
     return result;

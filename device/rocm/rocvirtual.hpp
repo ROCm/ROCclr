@@ -46,10 +46,10 @@ constexpr static uint64_t kUnlimitedWait = std::numeric_limits<uint64_t>::max();
 
 // Active wait time out incase same sdma engine is used again,
 // then just wait instead of adding dependency wait signal.
-constexpr static uint64_t kSDMAEngineTimeout = 10;
+constexpr static uint64_t kForcedTimeout = 10;
 
 template <bool active_wait_timeout = false>
-inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false, bool sdma_wait = false) {
+inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false, bool forced_wait = false) {
   if (hsa_signal_load_relaxed(signal) > 0) {
     uint64_t timeout = kTimeout100us;
     if (active_wait) {
@@ -57,7 +57,7 @@ inline bool WaitForSignal(hsa_signal_t signal, bool active_wait = false, bool sd
     }
     if (active_wait_timeout) {
       // If diff engine, wait to 10 ms. Otherwise no wait
-      timeout = (sdma_wait ? kSDMAEngineTimeout : ROC_ACTIVE_WAIT_TIMEOUT) * K;
+      timeout = (forced_wait ? kForcedTimeout : ROC_ACTIVE_WAIT_TIMEOUT) * K;
       if (timeout == 0) {
         return false;
       }
@@ -312,7 +312,8 @@ class VirtualGPU : public device::VirtualDevice {
                             const_address parameters,            //!< Parameters for the kernel
                             void* event_handle,  //!< Handle to OCL event for debugging
                             uint32_t sharedMemBytes = 0, //!< Shared memory size
-                            amd::NDRangeKernelCommand* vcmd = nullptr //!< Original launch command
+                            amd::NDRangeKernelCommand* vcmd = nullptr, //!< Original launch command
+                            hsa_kernel_dispatch_packet_t* aql_packet = nullptr  //!< Scheduler launch
                             );
   void submitNativeFn(amd::NativeFnCommand& cmd);
   void submitMarker(amd::Marker& cmd);
@@ -340,8 +341,6 @@ class VirtualGPU : public device::VirtualDevice {
   // actual implementation.
   virtual void submitSignal(amd::SignalCommand& cmd) {}
   virtual void submitMakeBuffersResident(amd::MakeBuffersResidentCommand& cmd) {}
-
-  virtual void submitTransferBufferFromFile(amd::TransferBufferFileCommand& cmd);
 
   void submitThreadTraceMemObjects(amd::ThreadTraceMemObjectsCommand& cmd) {}
   void submitThreadTrace(amd::ThreadTraceCommand& vcmd) {}
@@ -408,6 +407,7 @@ class VirtualGPU : public device::VirtualDevice {
 
   void* allocKernArg(size_t size, size_t alignment);
   bool isFenceDirty() const { return fence_dirty_; }
+  void resetFenceDirty() { fence_dirty_ = false; }
   // } roc OpenCL integration
  private:
   //! Dispatches a barrier with blocking HSA signals

@@ -78,9 +78,10 @@ Settings::Settings() {
 
   // By default use host blit
   blitEngine_ = BlitEngineHost;
-  pinnedXferSize_ = GPU_PINNED_MIN_XFER_SIZE * Mi;
+  pinnedXferSize_ = GPU_PINNED_XFER_SIZE * Mi;
+  size_t defaultMinXferSize = amd::IS_HIP ? 128: 4;
   pinnedMinXferSize_ = flagIsDefault(GPU_PINNED_MIN_XFER_SIZE)
-    ? 128 * Mi : GPU_PINNED_MIN_XFER_SIZE * Mi;
+    ? defaultMinXferSize * Mi : GPU_PINNED_MIN_XFER_SIZE * Mi;
 
   // Disable FP_FAST_FMA defines by default
   reportFMAF_ = false;
@@ -205,6 +206,7 @@ bool Settings::create(const Pal::DeviceProperties& palProp,
     case Pal::AsicRevision::Navi31:
     // Fall through for Navi2x ...
     case Pal::AsicRevision::Phoenix1:
+    case Pal::AsicRevision::Phoenix2:
     case Pal::AsicRevision::Raphael:
     case Pal::AsicRevision::Rembrandt:
     case Pal::AsicRevision::Navi24:

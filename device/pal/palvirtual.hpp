@@ -345,7 +345,6 @@ class VirtualGPU : public device::VirtualDevice {
   virtual void submitSvmFillMemory(amd::SvmFillMemoryCommand& cmd);
   virtual void submitSvmMapMemory(amd::SvmMapMemoryCommand& cmd);
   virtual void submitSvmUnmapMemory(amd::SvmUnmapMemoryCommand& cmd);
-  virtual void submitTransferBufferFromFile(amd::TransferBufferFileCommand& cmd);
   virtual void submitVirtualMap(amd::VirtualMapCommand& cmd);
   virtual void submitStreamOperation(amd::StreamOperationCommand& cmd);
   void submitExternalSemaphoreCmd(amd::ExternalSemaphoreCmd& cmd);
@@ -359,6 +358,8 @@ class VirtualGPU : public device::VirtualDevice {
   bool isHandlerPending() const { return false; }
 
   bool isFenceDirty() const { return false; }
+
+  void resetFenceDirty() {}
 
   //! Returns GPU device object associated with this kernel
   const Device& dev() const { return gpuDevice_; }

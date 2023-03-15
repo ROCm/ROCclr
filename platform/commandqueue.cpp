@@ -66,8 +66,8 @@ bool HostQueue::terminate() {
       marker->awaitCompletion();
       marker->release();
     }
-    thread_.acceptingCommands_ = false;
     thread_.Release();
+    thread_.acceptingCommands_ = false;
   } else {
     if (Os::isThreadAlive(thread_)) {
       Command* marker = nullptr;
@@ -120,7 +120,7 @@ void HostQueue::finish() {
       return;
     }
   }
-  if (nullptr == command || vdev()->isHandlerPending()) {
+  if (nullptr == command || vdev()->isHandlerPending() || vdev()->isFenceDirty()) {
     if (nullptr != command) {
       command->release();
     }
