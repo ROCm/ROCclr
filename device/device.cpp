@@ -745,7 +745,7 @@ bool Device::disableP2P(amd::Device* ptrDev) {
 }
 
 bool Device::UpdateStackSize(uint64_t stackSize) {
-  if (stackSize > 16 * Ki) {
+  if (stackSize > ((128 * Ki) - 16)) {
     return false;
   }
   stack_size_ = stackSize;
