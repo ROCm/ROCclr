@@ -615,25 +615,25 @@ getOptionDesc(std::string& options, size_t StartPos, bool IsShortForm,
              return -1;
          }
 
-         if ((OPTION_type(od) == OT_CSTRING) &&
-              options.at(pos) == '"') {
+         if (OPTION_type(od) == OT_CSTRING) {
+             /* Handle any quoted sections within string value */
              size_t sz = options.size();
-             if ((pos+1) >= sz) {
-                 return -1;
-             }
-             /* Handle quoted string value */
-             ePos = options.find('"', pos+1);
-             if (ePos == std::string::npos) {
-                 return -1;
+             bool quoted = false;
+             ePos = pos;
+
+             while (ePos < sz) {
+                 char c = options.at(ePos);
+                 if (c == '"') {
+                     quoted = !quoted;
+                 } else if (c == ' ' && !quoted) {
+                     break;
+                 }
+                 ++ePos;
              }
 
-             /* Advance ePos to the next position or npos */
-             if (ePos+1 < sz) {
-                 ++ePos;
-                 if (options.at(ePos) != ' ') {
-                     return -1;
-                 }
-             } else {
+             if (quoted) {
+                 return -1; // closing quote is missing
+             } else if (ePos == sz) {
                  ePos = std::string::npos;
              }
          } else {
